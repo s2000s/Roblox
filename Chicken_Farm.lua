@@ -140,20 +140,28 @@ end)
 local ToggleBuy = Tabs.Main:CreateToggle("ToggleBuy", {Title = "Auto Buy", Default = false })
 
 ToggleBuy:OnChanged(function(Value)
-    while ToggleBuy.Value do
-        if not ToggleBuy.Value then return end
-        event:InvokeServer("Buy Chickens", amount)
-        task.wait(0.1)
+    if ToggleBuy.Value then
+        task.spawn(function()
+            while ToggleBuy.Value do
+                if not ToggleBuy.Value then return end
+                event:InvokeServer("Buy Chickens", amount)
+                task.wait(0.1)
+            end
+        end)
     end
 end)
 
 local ToggleUpgradeTier = Tabs.Main:CreateToggle("ToggleUpgradeTier", {Title = "Auto Upgrade Tier", Default = false })
 
 ToggleUpgradeTier:OnChanged(function(Value)
-    while ToggleUpgradeTier.Value do
-        if not ToggleUpgradeTier.Value then return end
-        event:InvokeServer("Upgrade Buy Tier Level")
-        task.wait(0.1)
+    if ToggleUpgradeTier.Value then
+        task.spawn(function()
+            while ToggleUpgradeTier.Value do
+                if not ToggleUpgradeTier.Value then return end
+                event:InvokeServer("Upgrade Buy Tier Level")
+                task.wait(0.1)
+            end
+        end)
     end
 end)
 
@@ -213,11 +221,13 @@ local ToggleRebirth = Tabs.Main:CreateToggle("ToggleRebirth", {Title = "Auto Reb
 
 ToggleRebirth:OnChanged(function(Value)
     if ToggleRebirth.Value then
-        while ToggleRebirth.Value do
-            if not ToggleRebirth.Value then return end
-            event:InvokeServer("Rebirth")
-            task.wait(10)
-        end
+        task.spawn(function()
+            while ToggleRebirth.Value do
+                if not ToggleRebirth.Value then return end
+                event:InvokeServer("Rebirth")
+                task.wait(10)
+            end
+        end)
     end
 end)
 
