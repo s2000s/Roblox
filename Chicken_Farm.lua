@@ -3,7 +3,7 @@ local SaveManager = loadstring(game:HttpGetAsync("https://raw.githubusercontent.
 local InterfaceManager = loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/ActualMasterOogway/Fluent-Renewed/master/Addons/InterfaceManager.luau"))()
 
 local Window = Library:CreateWindow{
-    Title = " ",
+    Title = "Chicken Farm ",
     SubTitle = "by zzyyeez",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
@@ -236,7 +236,7 @@ InterfaceManager:SetLibrary(Library)
 -- SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes{}
 InterfaceManager:SetFolder("fzlmm_xz")
-SaveManager:SetFolder("fzlmm_xz/specific-game")
+SaveManager:SetFolder("fzlmm_xz/Chicken Farm")
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
