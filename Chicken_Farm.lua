@@ -63,7 +63,6 @@ Player.CharacterAdded:Connect(OnCharacterAdded)
 game:GetService("Players").LocalPlayer.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
-    task.wait(2)
 end)
 
 local PlotFolder = workspace:WaitForChild("Plots")
