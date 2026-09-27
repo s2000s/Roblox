@@ -575,7 +575,7 @@ AutoGradingT:OnChanged(function(Value)
                     local slots = slotStateData.slots or {}
                     local serverNow = workspace:GetServerTimeNow()
 
-                    -- 1. รับไอเทม/เคลียร์ดาว สำหรับสล็อตที่ทำเสร็จแล้ว
+                    -- 1. Claim/Clear slots that are already finished
                     for slotIndex = 1, unlockedCount do
                         if not AutoGradingT.Value then break end
 
@@ -583,9 +583,11 @@ AutoGradingT:OnChanged(function(Value)
 
                         if slotData then
                             if slotData.Grade then
+                                -- Already graded, just claim quietly without notification
                                 pcall(function()
                                     ClaimGradedItemRemote:InvokeServer(slotIndex)
                                 end)
+
                                 task.wait(1.2)
                             else
                                 local startTime = slotData.StartTime or 0
@@ -593,12 +595,38 @@ AutoGradingT:OnChanged(function(Value)
                                 local timeLeft = (startTime + duration) - serverNow
 
                                 if timeLeft <= 0 then
+                                    local slotItemData = slotData.ItemData or slotData.Data or {}
+                                    local itemDef = Items[tostring(slotItemData.ItemId)] or Items[slotItemData.ItemId]
+                                    local itemName = (slotItemData and slotItemData.Name) or (itemDef and (itemDef.Name or itemDef.DisplayName)) or "Unknown Item"
+
                                     local collectOk, collectRes = pcall(function()
                                         return CollectGradeRemote:InvokeServer(slotIndex)
                                     end)
 
                                     if collectOk and type(collectRes) == "table" and collectRes.success then
+                                        local rawGrade = collectRes.grade or collectRes.Grade or (collectRes.slotData and (collectRes.slotData.grade or collectRes.slotData.Grade)) or "Completed"
+                                        
+                                        -- แปลงชื่อ Grade เป็นไอคอนดาวหรือข้อความที่อ่านง่าย
+                                        local formattedGrade = rawGrade
+                                        if rawGrade == "Replica" then
+                                            formattedGrade = "❌ Replica"
+                                        elseif rawGrade == "OneStar" then
+                                            formattedGrade = "⭐"
+                                        elseif rawGrade == "TwoStar" then
+                                            formattedGrade = "⭐⭐"
+                                        elseif rawGrade == "ThreeStar" then
+                                            formattedGrade = "⭐⭐⭐"
+                                        end
+
+                                        -- Notify when grade result is collected
+                                        Library:Notify({
+                                            Title = "🎉 Grade Collected",
+                                            Description = string.format("📦 Item: %s\n🏆 Result: %s\n📌 Slot: %d", itemName, formattedGrade, slotIndex),
+                                            Time = 10
+                                        })
+
                                         task.wait(1.2)
+                                        -- Claim quietly after collecting
                                         pcall(function()
                                             ClaimGradedItemRemote:InvokeServer(slotIndex)
                                         end)
@@ -609,7 +637,7 @@ AutoGradingT:OnChanged(function(Value)
                         end
                     end
 
-                    -- 2. ดึงรายการไอเทมที่สามารถเกรดได้
+                    -- 2. Fetch gradable items list
                     local gradableOk, gradableData = pcall(function()
                         return GetGradableItemsRemote:InvokeServer()
                     end)
@@ -617,7 +645,7 @@ AutoGradingT:OnChanged(function(Value)
                     local rawItems = (gradableOk and type(gradableData) == "table" and gradableData.items) or {}
                     local gradableList = {}
 
-                    -- กรองเอาเฉพาะไอเทมที่ยัง "ไม่เคยเกรด" (ไม่มี Grade) และ Condition >= 50%
+                    -- Filter un-graded items with Condition >= 50%
                     for _, itemInfo in ipairs(rawItems) do
                         local data = itemInfo.data
                         if data and (not data.Grade) and (not data.Condition or data.Condition >= 50) then
@@ -634,7 +662,7 @@ AutoGradingT:OnChanged(function(Value)
                         end
                     end
 
-                    -- 3. จัดเรียงตาม Priority
+                    -- 3. Sort by priority
                     local priorityMode = GradingPriorityDd.Value or "Both"
 
                     table.sort(gradableList, function(a, b)
@@ -652,7 +680,7 @@ AutoGradingT:OnChanged(function(Value)
                         return false
                     end)
 
-                    -- 4. ส่งไอเทมเข้าสล็อตที่ว่างอยู่
+                    -- 4. Send items to empty slots
                     for slotIndex = 1, unlockedCount do
                         if not AutoGradingT.Value then break end
 
@@ -661,6 +689,10 @@ AutoGradingT:OnChanged(function(Value)
                         if not slotData then
                             for _, sortedItem in ipairs(gradableList) do
                                 local itemInfo = sortedItem.info
+                                local data = itemInfo.data
+                                
+                                local itemDef = Items[tostring(data.ItemId)] or Items[data.ItemId]
+                                local itemName = (data and data.Name) or (itemDef and (itemDef.Name or itemDef.DisplayName)) or ("Item ID: " .. tostring(data.ItemId))
 
                                 local startOk, startRes = pcall(function()
                                     return StartGradingRemote:InvokeServer(slotIndex, itemInfo.guid, itemInfo.source, itemInfo.vehicleGUID)
@@ -668,6 +700,21 @@ AutoGradingT:OnChanged(function(Value)
 
                                 if startOk and type(startRes) == "table" and startRes.success then
                                     slots[tostring(slotIndex)] = startRes.slotData or { StartTime = serverNow, Duration = 5 }
+                                    
+                                    -- Format duration text
+                                    local slotDuration = (startRes.slotData and startRes.slotData.Duration) or 5
+                                    local durationText = slotDuration .. "s"
+                                    if slotDuration >= 60 then
+                                        durationText = math.floor(slotDuration / 60) .. "m"
+                                    end
+
+                                    -- Notify when starting to grade an item
+                                    Library:Notify({
+                                        Title = "⏳ Grading Started",
+                                        Description = string.format("📦 Item: %s\n⏱️ Time: %s\n📌 Slot: %d", itemName, durationText, slotIndex),
+                                        Time = 10
+                                    })
+
                                     table.remove(gradableList, table.find(gradableList, sortedItem))
                                     task.wait(1.5)
                                     break
