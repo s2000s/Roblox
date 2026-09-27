@@ -43,6 +43,12 @@ local VirtualUser = game:GetService("VirtualUser")
 local TweenService = game:GetService("TweenService")
 local UIController = require(ReplicatedStorage.Modules.UIController)
 
+if UIController then
+    print("found -> UIController")
+else
+    warn("error -> not found UIController")
+end
+
 -- Modules
 local Items = require(ReplicatedStorage.Modules.Items)
 local MutatorModule = pcall(function() return require(ReplicatedStorage.Modules.MutatorModule) end) and require(ReplicatedStorage.Modules.MutatorModule) or nil
@@ -274,11 +280,11 @@ AutoBidT:OnChanged(function(Value)
         task.spawn(function()
             while AutoBidT.Value do
                 if UIController:IsOpen("AuctionBidding") then
-                    print("found -> bidding")
+                    -- print("found -> bidding")
                     Bid:FireServer()
                     task.wait(0.5)
                 else
-                    warn("waiting -> auctionbidding not found")
+                    -- warn("waiting -> auctionbidding not found")
                     task.wait(2)
                 end
             end
