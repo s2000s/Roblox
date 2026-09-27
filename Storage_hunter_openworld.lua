@@ -90,6 +90,11 @@ local PlotEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Plot")
 local VehicleEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Vehicles")
 local Bid = game:GetService("ReplicatedStorage").Events.Auction.Bid
 
+-- Pawn Events (Quick Sell)
+local PawnEvents = ReplicatedStorage:WaitForChild("Events"):FindFirstChild("Pawn")
+local GetPawnStateRemote = PawnEvents and PawnEvents:FindFirstChild("GetPawnState")
+local SellItemsRemote = PawnEvents and PawnEvents:FindFirstChild("SellItems")
+
 -- Grading Events
 local GradingEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Grading")
 local GetSlotStateRemote = GradingEvents:WaitForChild("GetSlotState")
@@ -113,7 +118,6 @@ local Rarity = {
     "Mythical"
 }
 
--- Rank ของ Rarity (ยิ่งสูงยิ่งหายาก)
 local RarityRank = {
     ["Mythical"] = 6,
     ["Legendary"] = 5,
@@ -123,7 +127,6 @@ local RarityRank = {
     ["Junk"] = 1
 }
 
--- ฟังก์ชันคำนวณมูลค่าของไอเทม
 local function calculateItemValue(itemData)
     if type(itemData) ~= "table" then return 0 end
 
@@ -204,7 +207,6 @@ AutoStockT:OnChanged(function(Value)
                                 local itemRarity = itemDef and itemDef.Rarity or "Junk"
                                 local isIgnoredRarity = IgnoreRarityStockDd.Value[itemRarity] == true
 
-                                -- *** ตรวจสอบว่าเป็น Trophy หรือไม่ (อ้างอิงจาก IsTrophy หรือ ItemId ของถ้วย) ***
                                 local isTrophyItem = false
                                 if IgnoreTrophyT and IgnoreTrophyT.Value then
                                     if itemData.IsTrophy == true or itemData.Name == "Gavel Trophy" then
@@ -216,14 +218,11 @@ AutoStockT:OnChanged(function(Value)
                                     end
                                 end
 
-                                -- *** ตรวจสอบการมีอยู่ของ Buffs / RolledAttributes อย่างละเอียด ***
                                 local hasBuffs = false
                                 if itemData.RolledAttributes ~= nil then
                                     if type(itemData.RolledAttributes) == "table" then
-                                        -- เช็คตาราง Buffs ว่ามีบัฟอยู่หรือไม่
                                         if type(itemData.RolledAttributes.Buffs) == "table" and #itemData.RolledAttributes.Buffs > 0 then
                                             hasBuffs = true
-                                        -- เช็คคุณสมบัติพิเศษอื่น ๆ เช่น Multiplier หรือ Nerfs
                                         elseif itemData.RolledAttributes.Multiplier or (type(itemData.RolledAttributes.Nerfs) == "table" and #itemData.RolledAttributes.Nerfs > 0) then
                                             hasBuffs = true
                                         end
@@ -235,18 +234,16 @@ AutoStockT:OnChanged(function(Value)
                                 local isFavorited = itemData.Favorited == true
                                 local fitsOnShelf = previewResult.Fits and previewResult.Fits[guid] == true
                                 
-                                -- *** ตรวจสอบการกั้นเกรดดาวจากข้อมูลไอเทมโดยตรง ***
+                                -- ป้องกันไม่ให้นำไอเทมที่เข้าเกณฑ์ Auto Grading ไปขึ้นชั้นขาย
                                 local isReservedForGrading = false
                                 if AutoGradingT and AutoGradingT.Value then
-                                    local isUnGraded = (itemData.Grade == nil) -- ยังไม่เคยเกรดดาว
-                                    local isGoodCondition = (not itemData.Condition or itemData.Condition >= 50) -- สภาพ >= 50%
-                                    
-                                    if isUnGraded and isGoodCondition then
+                                    local isUnGraded = (itemData.Grade == nil)
+                                    local isGoodCondition = (not itemData.Condition or itemData.Condition >= 50)
+                                    if isUnGraded and isGoodCondition and not isTrophyItem then
                                         isReservedForGrading = true
                                     end
                                 end
                                 
-                                -- กรองไอเทม: ต้องไม่ใช่ Trophy, ต้องไม่มี Buff, ไม่ติดรอเกรด, ไม่ได้ติดดาว Favorite, ไม่อยู่ใน Rarity ที่ยกเว้น
                                 if not isTrophyItem and not hasBuffs and not isReservedForGrading and not isFavorited and not isIgnoredRarity and fitsOnShelf then
                                     table.insert(itemGuids, guid)
                                 end
@@ -293,6 +290,146 @@ ShowOffer.OnClientEvent:Connect(function(offerId, npcModel, itemText, offerPrice
         RespondOffer:FireServer(offerId, true)
     else
         RespondOffer:FireServer(offerId, false)
+    end
+end)
+
+---------------------------------------------------------------------
+-- Quick Sell Groupbox
+---------------------------------------------------------------------
+local QuickSellLeftGroupbox = Tabs.Main:AddLeftGroupbox("Quick Sell")
+
+local QuickSellT = QuickSellLeftGroupbox:AddToggle("QuickSellT", {
+    Text = "Auto Quick Sell",
+    Default = false,
+})
+
+local SellAtMaxInventoryT = QuickSellLeftGroupbox:AddToggle("SellAtMaxInventoryT", {
+    Text = "Sell At Max Inventory",
+    Default = false,
+})
+
+local QuickSellMinRateS = QuickSellLeftGroupbox:AddSlider("QuickSellMinRateS", {
+    Text = "Min Rate (%)",
+    Default = 0,
+    Min = -50,
+    Max = 50,
+    Rounding = 0,
+    Compact = false,
+})
+
+local IgnoreRarityQuickSellDd = QuickSellLeftGroupbox:AddDropdown("IgnoreRarityQuickSellDd", {
+    Text = "Ignore Rarity",
+    Values = Rarity,
+    Default = {},
+    Multi = true,
+    AllowNull = true,
+})
+
+local IgnoreFavoriteQuickSellT = QuickSellLeftGroupbox:AddToggle("IgnoreFavoriteQuickSellT", {
+    Text = "Ignore Favorite",
+    Default = true,
+})
+
+local IgnoreTrophyQuickSellT = QuickSellLeftGroupbox:AddToggle("IgnoreTrophyQuickSellT", {
+    Text = "Ignore Trophy",
+    Default = true,
+})
+
+QuickSellT:OnChanged(function(Value)
+    if Value then
+        task.spawn(function()
+            while QuickSellT.Value do
+                if GetPawnStateRemote and SellItemsRemote then
+                    local shouldSell = true
+
+                    if SellAtMaxInventoryT and SellAtMaxInventoryT.Value then
+                        local invCount = tonumber(Player:GetAttribute("InventoryCount")) or 0
+                        local invCap = tonumber(Player:GetAttribute("InventoryCap")) or 99999
+                        if invCount < invCap then
+                            shouldSell = false
+                        end
+                    end
+
+                    if shouldSell then
+                        local ok, stateRes = pcall(function()
+                            return GetPawnStateRemote:InvokeServer()
+                        end)
+
+                        if ok and type(stateRes) == "table" then
+                            local rawRate = tonumber(stateRes.rate) or 1
+                            local currentDisplayRate = math.floor((rawRate - 1) * 100 + 0.5)
+                            local minAllowedRate = QuickSellMinRateS.Value
+
+                            if currentDisplayRate >= minAllowedRate then
+                                local invOk, invItems = pcall(function()
+                                    return InventoryEvents.GetPlayerInventory:InvokeServer()
+                                end)
+
+                                if invOk and type(invItems) == "table" then
+                                    local guidsToSell = {}
+                                    for guid, itemData in pairs(invItems) do
+                                        local itemDef = Items[tostring(itemData.ItemId)] or Items[itemData.ItemId]
+                                        local itemRarity = itemDef and itemDef.Rarity or "Junk"
+                                        local isIgnoredRarity = IgnoreRarityQuickSellDd.Value[itemRarity] == true
+
+                                        local isTrophyItem = false
+                                        if IgnoreTrophyQuickSellT and IgnoreTrophyQuickSellT.Value then
+                                            if itemData.IsTrophy == true or itemData.Name == "Gavel Trophy" then
+                                                isTrophyItem = true
+                                            elseif TrophyConfig and TrophyConfig.TrophyItemId and itemData.ItemId then
+                                                if tostring(itemData.ItemId) == tostring(TrophyConfig.TrophyItemId) then
+                                                    isTrophyItem = true
+                                                end
+                                            end
+                                        end
+
+                                        local isFavorited = false
+                                        if IgnoreFavoriteQuickSellT and IgnoreFavoriteQuickSellT.Value then
+                                            isFavorited = itemData.Favorited == true
+                                        end
+
+                                        local hasBuffs = false
+                                        if itemData.RolledAttributes ~= nil then
+                                            if type(itemData.RolledAttributes) == "table" then
+                                                if type(itemData.RolledAttributes.Buffs) == "table" and #itemData.RolledAttributes.Buffs > 0 then
+                                                    hasBuffs = true
+                                                elseif itemData.RolledAttributes.Multiplier or (type(itemData.RolledAttributes.Nerfs) == "table" and #itemData.RolledAttributes.Nerfs > 0) then
+                                                    hasBuffs = true
+                                                end
+                                            else
+                                                hasBuffs = true
+                                            end
+                                        end
+
+                                        -- ป้องกันไม่ให้ Quick Sell กวาดไอเทมที่เตรียมส่งเกรดดาวขายทิ้ง
+                                        local isReservedForGrading = false
+                                        if AutoGradingT and AutoGradingT.Value then
+                                            local isUnGraded = (itemData.Grade == nil)
+                                            local isGoodCondition = (not itemData.Condition or itemData.Condition >= 50)
+                                            if isUnGraded and isGoodCondition and not isTrophyItem then
+                                                isReservedForGrading = true
+                                            end
+                                        end
+
+                                        if not isTrophyItem and not isFavorited and not hasBuffs and not isReservedForGrading and not isIgnoredRarity then
+                                            table.insert(guidsToSell, guid)
+                                            if #guidsToSell >= 15 then break end
+                                        end
+                                    end
+
+                                    if #guidsToSell > 0 then
+                                        pcall(function()
+                                            SellItemsRemote:InvokeServer(guidsToSell)
+                                        end)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                task.wait(5)
+            end
+        end)
     end
 end)
 
@@ -545,7 +682,7 @@ AntiPoliceT:OnChanged(function(state)
 end)
 
 ---------------------------------------------------------------------
--- Grading Groupbox
+-- Grading Groupbox (อัปเดตระบบจัดลำดับและดึงรอบละหลายชิ้น)
 ---------------------------------------------------------------------
 local GradingRightGroupbox = Tabs.Main:AddRightGroupbox("Grading")
 
@@ -580,7 +717,7 @@ AutoGradingT:OnChanged(function(Value)
                     local slots = slotStateData.slots or {}
                     local serverNow = workspace:GetServerTimeNow()
 
-                    -- 1. Claim/Clear slots that are already finished
+                    -- 1. เคลมและเก็บไอเทมที่ตรวจเกรดเสร็จแล้ว
                     for slotIndex = 1, unlockedCount do
                         if not AutoGradingT.Value then break end
 
@@ -588,11 +725,9 @@ AutoGradingT:OnChanged(function(Value)
 
                         if slotData then
                             if slotData.Grade then
-                                -- Already graded, just claim quietly without notification
                                 pcall(function()
                                     ClaimGradedItemRemote:InvokeServer(slotIndex)
                                 end)
-
                                 task.wait(1.2)
                             else
                                 local startTime = slotData.StartTime or 0
@@ -611,7 +746,6 @@ AutoGradingT:OnChanged(function(Value)
                                     if collectOk and type(collectRes) == "table" and collectRes.success then
                                         local rawGrade = collectRes.grade or collectRes.Grade or (collectRes.slotData and (collectRes.slotData.grade or collectRes.slotData.Grade)) or "Completed"
                                         
-                                        -- แปลงชื่อ Grade เป็นไอคอนดาวหรือข้อความที่อ่านง่าย
                                         local formattedGrade = rawGrade
                                         if rawGrade == "Replica" then
                                             formattedGrade = "❌"
@@ -630,7 +764,6 @@ AutoGradingT:OnChanged(function(Value)
                                         })
 
                                         task.wait(1.2)
-                                        -- Claim quietly after collecting
                                         pcall(function()
                                             ClaimGradedItemRemote:InvokeServer(slotIndex)
                                         end)
@@ -641,7 +774,7 @@ AutoGradingT:OnChanged(function(Value)
                         end
                     end
 
-                    -- 2. Fetch gradable items list
+                    -- 2. ดึงรายการไอเทมที่สามารถส่งเกรดได้ทั้งหมด
                     local gradableOk, gradableData = pcall(function()
                         return GetGradableItemsRemote:InvokeServer()
                     end)
@@ -649,12 +782,10 @@ AutoGradingT:OnChanged(function(Value)
                     local rawItems = (gradableOk and type(gradableData) == "table" and gradableData.items) or {}
                     local gradableList = {}
 
-                    -- Filter un-graded items with Condition >= 50%
                     for _, itemInfo in ipairs(rawItems) do
                         local data = itemInfo.data
                         if data and (not data.Grade) and (not data.Condition or data.Condition >= 50) then
                             
-                            -- *** ตรวจสอบว่าเป็น Trophy หรือไม่ (เงื่อนไขเดียวกับ Auto Stock) ***
                             local isTrophyItem = false
                             if IgnoreGradingTrophyT and IgnoreGradingTrophyT.Value then
                                 if data.IsTrophy == true or data.Name == "Gavel Trophy" then
@@ -666,7 +797,6 @@ AutoGradingT:OnChanged(function(Value)
                                 end
                             end
 
-                            -- ถ้านั่นไม่ใช่โทรฟี่ (หรือปิดเปิดสลับ Ignore ไว้) ถึงจะนำมาเข้าลิสต์ประเมิน
                             if not isTrophyItem then
                                 local itemDef = Items[tostring(data.ItemId)] or Items[data.ItemId]
                                 local rarityStr = itemDef and itemDef.Rarity or "Junk"
@@ -682,7 +812,7 @@ AutoGradingT:OnChanged(function(Value)
                         end
                     end
 
-                    -- 3. Sort by priority
+                    -- 3. จัดเรียงลำดับจากมากไปน้อย (ตาม Dropdown ที่เลือก: Rarity, Most Value หรือ Both)
                     local priorityMode = GradingPriorityDd.Value or "Both"
 
                     table.sort(gradableList, function(a, b)
@@ -700,7 +830,7 @@ AutoGradingT:OnChanged(function(Value)
                         return false
                     end)
 
-                    -- 4. Send items to empty slots
+                    -- 4. ส่งไอเทมที่ดีที่สุด (ตามลำดับที่จัดไว้) เข้าสู่ช่องว่างที่ว่างอยู่
                     for slotIndex = 1, unlockedCount do
                         if not AutoGradingT.Value then break end
 
@@ -721,7 +851,6 @@ AutoGradingT:OnChanged(function(Value)
                                 if startOk and type(startRes) == "table" and startRes.success then
                                     slots[tostring(slotIndex)] = startRes.slotData or { StartTime = serverNow, Duration = 5 }
                                     
-                                    -- Format duration text
                                     local slotDuration = (startRes.slotData and startRes.slotData.Duration) or 5
                                     local durationText = slotDuration .. "s"
                                     if slotDuration >= 60 then
