@@ -274,9 +274,11 @@ AutoBidT:OnChanged(function(Value)
         task.spawn(function()
             while AutoBidT.Value do
                 if UIController:IsOpen("AuctionBidding") then
+                    print("found -> bidding")
                     Bid:FireServer()
                     task.wait(0.5)
                 else
+                    warn("waiting -> auctionbidding not found")
                     task.wait(2)
                 end
             end
