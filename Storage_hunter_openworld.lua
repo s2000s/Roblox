@@ -309,7 +309,7 @@ AutoBidT:OnChanged(function(Value)
             while AutoBidT.Value do
                 if Player:GetAttribute("InAuction") == true or UIController:IsOpen("AuctionBidding") then
                     Bid:FireServer()
-                    task.wait(0.5)
+                    task.wait(0.1)
                 else
                     task.wait(1)
                 end
