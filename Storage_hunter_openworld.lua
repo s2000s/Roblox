@@ -20,12 +20,12 @@ local Window = Library:CreateWindow({
     GlobalSearch = true,
     Resizable = false,
     DisableSearch = false,
-    ShowCustomCursor = true,
+    ShowCustomCursor = false,
     CornerRadius = 5,
 })
 
 Window:SetAnimations({
-    ToggleWindow = true,
+    ToggleWindow = false,
     TabSwitch = true,
     Groupbox = true,
     Dropdown = true,
@@ -550,11 +550,16 @@ end)
 local GradingRightGroupbox = Tabs.Main:AddRightGroupbox("Grading")
 
 local GradingPriorityDd = GradingRightGroupbox:AddDropdown("GradingPriorityDd", {
-    Text = "Grading Priority",
+    Text = "Priority",
     Values = { "Rarity", "Most Value", "Both" },
     Default = "Both",
     Multi = false,
     AllowNull = false,
+})
+
+local IgnoreGradingTrophyT = GradingRightGroupbox:AddToggle("IgnoreGradingTrophyT", {
+    Text = "Ignore Trophy",
+    Default = true,
 })
 
 local AutoGradingT = GradingRightGroupbox:AddToggle("AutoGradingT", {
@@ -620,7 +625,7 @@ AutoGradingT:OnChanged(function(Value)
 
                                         Library:Notify({
                                             Title = "SUCCESS • COLLECTED",
-                                            Description = string.format("[%d] %s ➔ %s", slotIndex, itemName, formattedGrade),
+                                            Description = string.format("[%d] %s -> %s", slotIndex, itemName, formattedGrade),
                                             Time = 10
                                         })
 
@@ -648,16 +653,32 @@ AutoGradingT:OnChanged(function(Value)
                     for _, itemInfo in ipairs(rawItems) do
                         local data = itemInfo.data
                         if data and (not data.Grade) and (not data.Condition or data.Condition >= 50) then
-                            local itemDef = Items[tostring(data.ItemId)] or Items[data.ItemId]
-                            local rarityStr = itemDef and itemDef.Rarity or "Junk"
-                            local rarityRank = RarityRank[rarityStr] or 1
-                            local itemValue = calculateItemValue(data)
+                            
+                            -- *** ตรวจสอบว่าเป็น Trophy หรือไม่ (เงื่อนไขเดียวกับ Auto Stock) ***
+                            local isTrophyItem = false
+                            if IgnoreGradingTrophyT and IgnoreGradingTrophyT.Value then
+                                if data.IsTrophy == true or data.Name == "Gavel Trophy" then
+                                    isTrophyItem = true
+                                elseif TrophyConfig and TrophyConfig.TrophyItemId and data.ItemId then
+                                    if tostring(data.ItemId) == tostring(TrophyConfig.TrophyItemId) then
+                                        isTrophyItem = true
+                                    end
+                                end
+                            end
 
-                            table.insert(gradableList, {
-                                info = itemInfo,
-                                rarityRank = rarityRank,
-                                value = itemValue
-                            })
+                            -- ถ้านั่นไม่ใช่โทรฟี่ (หรือปิดเปิดสลับ Ignore ไว้) ถึงจะนำมาเข้าลิสต์ประเมิน
+                            if not isTrophyItem then
+                                local itemDef = Items[tostring(data.ItemId)] or Items[data.ItemId]
+                                local rarityStr = itemDef and itemDef.Rarity or "Junk"
+                                local rarityRank = RarityRank[rarityStr] or 1
+                                local itemValue = calculateItemValue(data)
+
+                                table.insert(gradableList, {
+                                    info = itemInfo,
+                                    rarityRank = rarityRank,
+                                    value = itemValue
+                                })
+                            end
                         end
                     end
 
