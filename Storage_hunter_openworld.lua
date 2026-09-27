@@ -9,6 +9,8 @@ local Toggles = Library.Toggles
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 
+print("111111111111111111")
+
 local Window = Library:CreateWindow({
     Title = "Storage Hunters",
     Footer = "",
@@ -164,6 +166,11 @@ local IgnoreRarityStockDd = ShopMainLeftGroupbox:AddDropdown("IgnoreRarityStockD
     AllowNull = true,
 })
 
+local IgnoreTrophyT = ShopMainLeftGroupbox:AddToggle("IgnoreTrophyT", {
+    Text = "Ignore Trophy",
+    Default = true,
+})
+
 local AutoStockT = ShopMainLeftGroupbox:AddToggle("AutoStockT", {
     Text = "Auto Stock Items",
     Default = false,
@@ -197,6 +204,18 @@ AutoStockT:OnChanged(function(Value)
                                 local itemRarity = itemDef and itemDef.Rarity or "Junk"
                                 local isIgnoredRarity = IgnoreRarityStockDd.Value[itemRarity] == true
 
+                                -- *** ตรวจสอบว่าเป็น Trophy หรือไม่ (อ้างอิงจาก IsTrophy หรือ ItemId ของถ้วย) ***
+                                local isTrophyItem = false
+                                if IgnoreTrophyT and IgnoreTrophyT.Value then
+                                    if itemData.IsTrophy == true or itemData.Name == "Gavel Trophy" then
+                                        isTrophyItem = true
+                                    elseif TrophyConfig and TrophyConfig.TrophyItemId and itemData.ItemId then
+                                        if tostring(itemData.ItemId) == tostring(TrophyConfig.TrophyItemId) then
+                                            isTrophyItem = true
+                                        end
+                                    end
+                                end
+
                                 -- *** ตรวจสอบการมีอยู่ของ Buffs / RolledAttributes อย่างละเอียด ***
                                 local hasBuffs = false
                                 if itemData.RolledAttributes ~= nil then
@@ -227,8 +246,8 @@ AutoStockT:OnChanged(function(Value)
                                     end
                                 end
                                 
-                                -- กรองไอเทม: ต้องไม่มี Buff (not hasBuffs), ไม่ติดรอเกรด, ไม่ได้ติดดาว Favorite, ไม่อยู่ใน Rarity ที่ยกเว้น
-                                if not hasBuffs and not isReservedForGrading and not isFavorited and not isIgnoredRarity and fitsOnShelf then
+                                -- กรองไอเทม: ต้องไม่ใช่ Trophy, ต้องไม่มี Buff, ไม่ติดรอเกรด, ไม่ได้ติดดาว Favorite, ไม่อยู่ใน Rarity ที่ยกเว้น
+                                if not isTrophyItem and not hasBuffs and not isReservedForGrading and not isFavorited and not isIgnoredRarity and fitsOnShelf then
                                     table.insert(itemGuids, guid)
                                 end
                             end
