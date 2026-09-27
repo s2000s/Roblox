@@ -197,14 +197,29 @@ AutoStockT:OnChanged(function(Value)
                                 local itemRarity = itemDef and itemDef.Rarity or "Junk"
                                 local isIgnoredRarity = IgnoreRarityStockDd.Value[itemRarity] == true
 
-                                local hasRolledAttributes = itemData.RolledAttributes ~= nil
+                                -- *** ตรวจสอบการมีอยู่ของ Buffs / RolledAttributes อย่างละเอียด ***
+                                local hasBuffs = false
+                                if itemData.RolledAttributes ~= nil then
+                                    if type(itemData.RolledAttributes) == "table" then
+                                        -- เช็คตาราง Buffs ว่ามีบัฟอยู่หรือไม่
+                                        if type(itemData.RolledAttributes.Buffs) == "table" and #itemData.RolledAttributes.Buffs > 0 then
+                                            hasBuffs = true
+                                        -- เช็คคุณสมบัติพิเศษอื่น ๆ เช่น Multiplier หรือ Nerfs
+                                        elseif itemData.RolledAttributes.Multiplier or (type(itemData.RolledAttributes.Nerfs) == "table" and #itemData.RolledAttributes.Nerfs > 0) then
+                                            hasBuffs = true
+                                        end
+                                    else
+                                        hasBuffs = true
+                                    end
+                                end
+
                                 local isFavorited = itemData.Favorited == true
                                 local fitsOnShelf = previewResult.Fits and previewResult.Fits[guid] == true
                                 
                                 -- *** ตรวจสอบการกั้นเกรดดาวจากข้อมูลไอเทมโดยตรง ***
                                 local isReservedForGrading = false
                                 if AutoGradingT and AutoGradingT.Value then
-                                    local isUnGraded = (itemData.Grade == nil) -- ยังไม่เคยเกรดดาว (ไม่มี Grade/OneStar/TwoStar/Replica)
+                                    local isUnGraded = (itemData.Grade == nil) -- ยังไม่เคยเกรดดาว
                                     local isGoodCondition = (not itemData.Condition or itemData.Condition >= 50) -- สภาพ >= 50%
                                     
                                     if isUnGraded and isGoodCondition then
@@ -212,8 +227,8 @@ AutoStockT:OnChanged(function(Value)
                                     end
                                 end
                                 
-                                -- หากไอเทมเข้าเกณฑ์รอเกรด จะข้ามไปทันที ไม่นำไปขาย
-                                if not isReservedForGrading and not hasRolledAttributes and not isFavorited and not isIgnoredRarity and fitsOnShelf then
+                                -- กรองไอเทม: ต้องไม่มี Buff (not hasBuffs), ไม่ติดรอเกรด, ไม่ได้ติดดาว Favorite, ไม่อยู่ใน Rarity ที่ยกเว้น
+                                if not hasBuffs and not isReservedForGrading and not isFavorited and not isIgnoredRarity and fitsOnShelf then
                                     table.insert(itemGuids, guid)
                                 end
                             end
