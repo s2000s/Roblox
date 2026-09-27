@@ -9,7 +9,7 @@ local Toggles = Library.Toggles
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 
-print("111111111111111111")
+print("2222222222222222")
 
 local Window = Library:CreateWindow({
     Title = "Storage Hunters",
@@ -609,7 +609,7 @@ AutoGradingT:OnChanged(function(Value)
                                         -- แปลงชื่อ Grade เป็นไอคอนดาวหรือข้อความที่อ่านง่าย
                                         local formattedGrade = rawGrade
                                         if rawGrade == "Replica" then
-                                            formattedGrade = "❌ Replica"
+                                            formattedGrade = "❌"
                                         elseif rawGrade == "OneStar" then
                                             formattedGrade = "⭐"
                                         elseif rawGrade == "TwoStar" then
@@ -618,10 +618,9 @@ AutoGradingT:OnChanged(function(Value)
                                             formattedGrade = "⭐⭐⭐"
                                         end
 
-                                        -- Notify when grade result is collected
                                         Library:Notify({
-                                            Title = "🎉 Grade Collected",
-                                            Description = string.format("📦 Item: %s\n🏆 Result: %s\n📌 Slot: %d", itemName, formattedGrade, slotIndex),
+                                            Title = "SUCCESS • COLLECTED",
+                                            Description = string.format("[%d] %s ➔ %s", slotIndex, itemName, formattedGrade),
                                             Time = 10
                                         })
 
@@ -708,10 +707,9 @@ AutoGradingT:OnChanged(function(Value)
                                         durationText = math.floor(slotDuration / 60) .. "m"
                                     end
 
-                                    -- Notify when starting to grade an item
                                     Library:Notify({
-                                        Title = "⏳ Grading Started",
-                                        Description = string.format("📦 Item: %s\n⏱️ Time: %s\n📌 Slot: %d", itemName, durationText, slotIndex),
+                                        Title = "START • GRADING",
+                                        Description = string.format("[%d] %s (%s)", slotIndex, itemName, durationText),
                                         Time = 10
                                     })
 
