@@ -421,8 +421,7 @@ AutoAuctionT:OnChanged(function(Value)
             if zoneCFrame and root and root.Parent then
                 local offset = root.Position - zoneCFrame.Position
                 if offset.Magnitude < 30 then
-                    local horizontalOffset = Vector3.new(offset.X, 0, offset.Z)
-                    local direction = horizontalOffset.Magnitude > 0.01 and horizontalOffset.Unit or Vector3.new(-zoneCFrame.LookVector.X, 0, -zoneCFrame.LookVector.Z)
+                    local direction = Vector3.new(-zoneCFrame.LookVector.X, 0, -zoneCFrame.LookVector.Z)
                     if direction.Magnitude <= 0.01 then direction = Vector3.new(1, 0, 0) end
                     direction = direction.Unit
                     local destination = zoneCFrame.Position + direction * 35 + Vector3.new(0, 3, 0)
