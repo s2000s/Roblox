@@ -323,14 +323,7 @@ AutoAuctionT:OnChanged(function(Value)
             local leaderstats = Player:FindFirstChild("leaderstats")
             local nwStat = leaderstats and leaderstats:FindFirstChild("Net Worth")
             if not nwStat then return nil end
-            if nwStat:IsA("NumberValue") or nwStat:IsA("IntValue") then
-                return nwStat.Value
-            elseif nwStat:IsA("StringValue") then
-                return readNumberText(nwStat.Value)
-            elseif nwStat:IsA("TextLabel") or nwStat:IsA("TextButton") then
-                return readNumberText(nwStat.Text)
-            end
-            return nil
+            return readNumberText(nwStat:GetAttribute("RawValue"))
         end
 
         local function waitForGarageState(garage, expected, timeoutSeconds)
