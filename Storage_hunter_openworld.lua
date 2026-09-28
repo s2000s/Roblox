@@ -58,6 +58,28 @@ local MutatorModule = pcall(function() return require(ReplicatedStorage.Modules.
 local GameConfig = pcall(function() return require(ReplicatedStorage.Modules.GameConfig) end) and require(ReplicatedStorage.Modules.GameConfig) or nil
 local GradingModule = GameConfig and GameConfig.Grading or nil
 
+local function isTrophyItemData(itemData)
+    if type(itemData) ~= "table" then return false end
+    if itemData.IsTrophy == true then return true end
+
+    local itemId = itemData.ItemId
+    local itemDef = itemId and (Items[tostring(itemId)] or Items[itemId])
+    if itemDef and (itemDef.IsTrophy == true or itemDef.Trophy == true) then return true end
+
+    local names = {
+        itemData.Name,
+        itemData.DisplayName,
+        itemDef and itemDef.Name,
+        itemDef and itemDef.DisplayName,
+    }
+    for _, name in pairs(names) do
+        if type(name) == "string" and string.find(string.lower(name), "trophy", 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
 local Player = Players.LocalPlayer
 if not Player then
     Player = Players.PlayerAdded:Wait()
@@ -326,6 +348,16 @@ AutoAuctionT:OnChanged(function(Value)
             return readNumberText(nwStat:GetAttribute("RawValue"))
         end
 
+        local function stopIfInventoryFull()
+            local inventoryCount = tonumber(Player:GetAttribute("InventoryCount"))
+            local inventoryCap = tonumber(Player:GetAttribute("InventoryCap"))
+            if inventoryCount and inventoryCap and inventoryCap > 0 and inventoryCount >= inventoryCap then
+                print(string.format("[AutoAuction] Inventory full (%s/%s); stopping Auto Auction", tostring(inventoryCount), tostring(inventoryCap)))
+                return true
+            end
+            return false
+        end
+
         local function waitForGarageState(garage, expected, timeoutSeconds)
             local deadline = os.clock() + timeoutSeconds
             repeat
@@ -378,6 +410,7 @@ AutoAuctionT:OnChanged(function(Value)
 
         local function runAutoAuctionBids(garage)
             while isRunning() and garage.Parent and garage:GetAttribute("InAuction") == true do
+                if stopIfInventoryFull() then break end
                 local uiOk, biddingUiOpen = pcall(function()
                     return UIController:IsOpen("AuctionBidding")
                 end)
@@ -391,6 +424,8 @@ AutoAuctionT:OnChanged(function(Value)
         end
 
         while isRunning() do
+            if stopIfInventoryFull() then break end
+
             local dynamicAreas, areaSet = {}, {}
             local function addArea(name)
                 if type(name) == "string" and name ~= "" and not areaSet[name] then
@@ -453,6 +488,7 @@ AutoAuctionT:OnChanged(function(Value)
                     local zoneCFrame = getAuctionZoneCFrame(zone)
 
                     if prompt and prompt:IsA("ProximityPrompt") and hrp then
+                        if stopIfInventoryFull() then break end
                         print(string.format("[AutoAuction] Target %s | player Net Worth: %s | garage minimum: %s", garage.Name, tostring(myNetWorth), tostring(minWorth)))
                         if zoneCFrame then
                             hrp.CFrame = zoneCFrame + Vector3.new(0, 3, 0)
@@ -907,14 +943,11 @@ QuickSellT:OnChanged(function(Value)
         task.spawn(function()
             while QuickSellT.Value do
                 if GetPawnStateRemote and SellItemsRemote then
-                    local shouldSell = true
-
+                    local shouldSell = not (SellAtMaxInventoryT and SellAtMaxInventoryT.Value)
                     if SellAtMaxInventoryT and SellAtMaxInventoryT.Value then
-                        local invCount = tonumber(Player:GetAttribute("InventoryCount")) or 0
-                        local invCap = tonumber(Player:GetAttribute("InventoryCap")) or 99999
-                        if invCount < invCap then
-                            shouldSell = false
-                        end
+                        local invCount = tonumber(Player:GetAttribute("InventoryCount"))
+                        local invCap = tonumber(Player:GetAttribute("InventoryCap"))
+                        shouldSell = invCount ~= nil and invCap ~= nil and invCap > 0 and invCount >= invCap
                     end
 
                     if shouldSell then
@@ -1170,16 +1203,7 @@ AutoGradingT:OnChanged(function(Value)
                         local data = itemInfo.data
                         if data and (not data.Grade) and (not data.Condition or data.Condition >= 50) then
                             
-                            local isTrophyItem = false
-                            if IgnoreGradingTrophyT and IgnoreGradingTrophyT.Value then
-                                if data.IsTrophy == true or data.Name == "Gavel Trophy" then
-                                    isTrophyItem = true
-                                elseif TrophyConfig and TrophyConfig.TrophyItemId and data.ItemId then
-                                    if tostring(data.ItemId) == tostring(TrophyConfig.TrophyItemId) then
-                                        isTrophyItem = true
-                                    end
-                                end
-                            end
+                            local isTrophyItem = IgnoreGradingTrophyT.Value and isTrophyItemData(data)
 
                             if not isTrophyItem then
                                 local itemDef = Items[tostring(data.ItemId)] or Items[data.ItemId]
