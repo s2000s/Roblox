@@ -110,6 +110,33 @@ local RespondOffer = NPCShopper:WaitForChild("RespondOffer")
 local PoliceChase = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Misc"):WaitForChild("PoliceChase")
 
 local Garage = workspace:WaitForChild("_Debris"):WaitForChild("Garages")
+local SeizedGarageRemote = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Misc"):WaitForChild("SeizedGarage")
+local seizedGarageGuids = {}
+
+SeizedGarageRemote.OnClientEvent:Connect(function(action, guid)
+    if action == "Set" and type(guid) == "string" then
+        table.clear(seizedGarageGuids)
+        seizedGarageGuids[guid] = true
+    elseif action == "Clear" then
+        if type(guid) == "string" then
+            seizedGarageGuids[guid] = nil
+        else
+            table.clear(seizedGarageGuids)
+        end
+    end
+end)
+
+task.defer(function()
+    pcall(function()
+        SeizedGarageRemote:FireServer()
+    end)
+end)
+
+local function isPoliceGarage(garage)
+    if garage:FindFirstChild("SeizedDressing") then return true end
+    local guid = garage:GetAttribute("GUID")
+    return type(guid) == "string" and seizedGarageGuids[guid] == true
+end
 
 local Area = {
     "Junk Yard",
@@ -194,6 +221,11 @@ SelectAreaD:OnChanged(function(Value)
 
 end)
 
+local OnlyPoliceContainerT = AuctionMainLeftGroupbox:AddToggle("OnlyPoliceContainerT", {
+    Text = "Only Police",
+    Default = false
+})
+
 local MinStartPrice = AuctionMainLeftGroupbox:AddInput("MinStartPrice", {
 	Default = "1000",
 	Numeric = true,
@@ -203,7 +235,6 @@ local MinStartPrice = AuctionMainLeftGroupbox:AddInput("MinStartPrice", {
 	Text = "Min",
 
 	Callback = function(Value)
-
 	end,
 })
 
@@ -212,189 +243,246 @@ local AutoAuctionT = AuctionMainLeftGroupbox:AddToggle("AutoAuctionT", {
     Default = false
 })
 
+local autoAuctionRunId = 0
 AutoAuctionT:OnChanged(function(Value)
-    if Value then
-        task.spawn(function()
-            -- ฟังก์ชันดึงราคาเริ่มต้นประมูลจากโมดูล
-            local function AuctionStartingBid()
-                local success, AuctionBidding = pcall(function()
-                    return require(ReplicatedStorage.Modules.Screens.AuctionBidding)
+    autoAuctionRunId = autoAuctionRunId + 1
+    local runId = autoAuctionRunId
+    if not Value then return end
+
+    task.spawn(function()
+        local function isRunning()
+            return AutoAuctionT.Value and autoAuctionRunId == runId
+        end
+
+        local function readNumberText(value)
+            if type(value) == "number" then return value end
+            if type(value) ~= "string" then return nil end
+            local cleanText = value:gsub(",", ""):gsub("[^%d%.%-]", "")
+            return tonumber(cleanText)
+        end
+
+        local function getGarageMinNetWorth(garageItem)
+            local entry = garageItem:FindFirstChild("EntrySquare")
+            local promptPart = entry and entry:FindFirstChild("PromptPart")
+            local billboard = promptPart and promptPart:FindFirstChild("BillboardGui", true)
+            local container = billboard and billboard:FindFirstChild("Container", true)
+            local valueObj = container and container:FindFirstChild("MinNetWorth", true)
+            if not valueObj then return nil end
+
+            if valueObj:IsA("TextLabel") or valueObj:IsA("TextButton") or valueObj:IsA("TextBox") then
+                return readNumberText(valueObj.Text)
+            elseif valueObj:IsA("NumberValue") or valueObj:IsA("IntValue") then
+                return valueObj.Value
+            elseif valueObj:IsA("StringValue") then
+                return readNumberText(valueObj.Value)
+            end
+            return nil
+        end
+
+        local function getPlayerNetWorth()
+            local leaderstats = Player:FindFirstChild("leaderstats")
+            local nwStat = leaderstats and leaderstats:FindFirstChild("Net Worth")
+            if not nwStat then return nil end
+            if nwStat:IsA("NumberValue") or nwStat:IsA("IntValue") then
+                return nwStat.Value
+            elseif nwStat:IsA("StringValue") then
+                return readNumberText(nwStat.Value)
+            elseif nwStat:IsA("TextLabel") or nwStat:IsA("TextButton") then
+                return readNumberText(nwStat.Text)
+            end
+            return nil
+        end
+
+        local function waitForGarageState(garage, expected, timeoutSeconds)
+            local deadline = os.clock() + timeoutSeconds
+            repeat
+                if not isRunning() or not garage.Parent then return false end
+                if garage:GetAttribute("InAuction") == expected then return true end
+                task.wait(0.1)
+            until os.clock() >= deadline
+            return garage.Parent ~= nil and garage:GetAttribute("InAuction") == expected
+        end
+
+        local function getAuctionZoneCFrame(zone)
+            if not zone then return nil end
+            if zone:IsA("BasePart") then return zone.CFrame end
+            if zone:IsA("Model") then
+                local ok, pivot = pcall(function() return zone:GetPivot() end)
+                if ok then return pivot end
+            end
+            return nil
+        end
+
+        local function moveAwayFromAuctionZone(zone)
+            local zoneCFrame = getAuctionZoneCFrame(zone)
+            local root = hrp
+            if not zoneCFrame or not root or not root.Parent then return false end
+
+            local offset = root.Position - zoneCFrame.Position
+            if offset.Magnitude >= 30 then return false end
+            local horizontalOffset = Vector3.new(offset.X, 0, offset.Z)
+            local direction = horizontalOffset.Magnitude > 0.01 and horizontalOffset.Unit or Vector3.new(-zoneCFrame.LookVector.X, 0, -zoneCFrame.LookVector.Z)
+            if direction.Magnitude <= 0.01 then direction = Vector3.new(1, 0, 0) end
+            direction = direction.Unit
+            local destination = zoneCFrame.Position + direction * 35 + Vector3.new(0, 3, 0)
+            root.CFrame = CFrame.new(destination)
+
+            local events = ReplicatedStorage:FindFirstChild("Events")
+            local auctionEvents = events and events:FindFirstChild("Auction")
+            local leaveAuction = auctionEvents and auctionEvents:FindFirstChild("LeaveAuction")
+            if leaveAuction and leaveAuction:IsA("RemoteFunction") then
+                local ok, err = pcall(function()
+                    leaveAuction:InvokeServer()
                 end)
-                
-                if success and AuctionBidding then
-                    return AuctionBidding._startingBidPrice or 0
+                if not ok then
+                    warn(string.format("[AutoAuction] LeaveAuction failed: %s", tostring(err)))
                 end
-                return 0
+            else
+                warn("[AutoAuction] LeaveAuction RemoteFunction not found")
+            end
+            return true
+        end
+
+        local function runAutoAuctionBids(garage)
+            while isRunning() and garage.Parent and garage:GetAttribute("InAuction") == true do
+                local uiOk, biddingUiOpen = pcall(function()
+                    return UIController:IsOpen("AuctionBidding")
+                end)
+                if Player:GetAttribute("InAuction") == true or (uiOk and biddingUiOpen) then
+                    pcall(function() Bid:FireServer() end)
+                    task.wait(0.01)
+                else
+                    task.wait(0.25)
+                end
+            end
+        end
+
+        while isRunning() do
+            local dynamicAreas, areaSet = {}, {}
+            local function addArea(name)
+                if type(name) == "string" and name ~= "" and not areaSet[name] then
+                    areaSet[name] = true
+                    table.insert(dynamicAreas, name)
+                end
+            end
+            for _, name in ipairs(Area) do addArea(name) end
+
+            local selectedArea = Options.SelectAreaD and Options.SelectAreaD.Value
+            if type(selectedArea) ~= "string" or selectedArea == "" then
+                selectedArea = nil
+            end
+            local myNetWorth = getPlayerNetWorth()
+            local garages = Garage:GetChildren()
+            for _, garage in ipairs(garages) do
+                local areaName = garage:GetAttribute("AreaName")
+                addArea(areaName)
+            end
+            if Options.SelectAreaD then
+                pcall(function() Options.SelectAreaD:SetValues(dynamicAreas) end)
             end
 
-            -- ฟังก์ชันช่วยดึงค่า MinNetWorth จากป้ายของตู้และแปลงเป็นตัวเลข
-            local function getGarageMinNetWorth(garageItem)
-                local container = garageItem:FindFirstChild("EntrySquare") 
-                    and garageItem.EntrySquare:FindFirstChild("PromptPart") 
-                    and garageItem.EntrySquare.PromptPart:FindFirstChild("BillboardGui", true) 
-                    and garageItem.EntrySquare.PromptPart.BillboardGui:FindFirstChild("Container", true)
-                
-                local minNetWorthObj = container and container:FindFirstChild("MinNetWorth")
-                if minNetWorthObj then
-                    if minNetWorthObj:IsA("TextLabel") or minNetWorthObj:IsA("TextButton") then
-                        local cleanText = minNetWorthObj.Text:gsub("[^%d]", "")
-                        return tonumber(cleanText) or 0
-                    elseif minNetWorthObj:IsA("NumberValue") or minNetWorthObj:IsA("IntValue") then
-                        return minNetWorthObj.Value
+            local candidates, policeCandidates = {}, {}
+            for _, garage in ipairs(garages) do
+                local areaName = garage:GetAttribute("AreaName")
+                local areaMatches = selectedArea == nil or areaName == selectedArea
+                if areaMatches and garage:GetAttribute("InAuction") ~= true then
+                    table.insert(candidates, garage)
+                    if isPoliceGarage(garage) then
+                        table.insert(policeCandidates, garage)
                     end
                 end
-                return 0
             end
 
-            -- ฟังก์ชันดึงค่า Net Worth ของผู้เล่น
-            local function getPlayerNetWorth()
-                local leaderstats = Player:FindFirstChild("leaderstats")
-                if leaderstats then
-                    local nwStat = leaderstats:FindFirstChild("Net Worth")
-                    if nwStat then
-                        if nwStat:IsA("NumberValue") or nwStat:IsA("IntValue") then
-                            return nwStat.Value
-                        elseif nwStat:IsA("StringValue") or nwStat:IsA("TextLabel") then
-                            local cleanText = nwStat.Value:gsub("[^%d]", "")
-                            return tonumber(cleanText) or 0
+            if OnlyPoliceContainerT and OnlyPoliceContainerT.Value then
+                if #policeCandidates > 0 then
+                    candidates = policeCandidates
+                elseif selectedArea == nil then
+                    -- With no area selected, Only Police remains a strict filter.
+                    candidates = {}
+                end
+                -- With an area selected and no police garage available, keep all area candidates as fallback.
+            end
+
+            local foundTarget = false
+            if isRunning() and #candidates > 0 then
+                local garage = candidates[math.random(1, #candidates)]
+                local minWorth = getGarageMinNetWorth(garage)
+                local zone = garage:FindFirstChild("AuctionZone")
+
+                if minWorth == nil or (minWorth > 0 and (myNetWorth == nil or myNetWorth < minWorth)) then
+                    moveAwayFromAuctionZone(zone)
+                    print(string.format("[AutoAuction] Skip %s | player Net Worth: %s | garage minimum: %s | requirement not met or unreadable", garage.Name, tostring(myNetWorth), tostring(minWorth)))
+                    foundTarget = true
+                else
+                    local entry = garage:FindFirstChild("EntrySquare")
+                    local promptPart = entry and entry:FindFirstChild("PromptPart")
+                    local prompt = promptPart and promptPart:FindFirstChild("EnterAuction")
+                    local zoneCFrame = getAuctionZoneCFrame(zone)
+
+                    if prompt and prompt:IsA("ProximityPrompt") and hrp then
+                        print(string.format("[AutoAuction] Target %s | player Net Worth: %s | garage minimum: %s", garage.Name, tostring(myNetWorth), tostring(minWorth)))
+                        if zoneCFrame then
+                            hrp.CFrame = zoneCFrame + Vector3.new(0, 3, 0)
+                            task.wait(0.2)
                         end
-                    end
-                end
-                return 0
-            end
+                        if not isRunning() then break end
 
-            while AutoAuctionT.Value do
-                local dynamicAreas = {}
-                local areaSet = {}
-
-                for _, areaName in ipairs(Area) do
-                    if not areaSet[areaName] then
-                        areaSet[areaName] = true
-                        table.insert(dynamicAreas, areaName)
-                    end
-                end
-
-                local selectedArea = Options.SelectAreaD and Options.SelectAreaD.Value
-                local myNetWorth = getPlayerNetWorth()
-
-                -- วนลูปเช็กหา Garage
-                for _, i in ipairs(Garage:GetChildren()) do
-                    if not AutoAuctionT.Value then break end
-                    
-                    local areaname = i:GetAttribute("AreaName")
-                    local isAuctionActive = i:GetAttribute("InAuction")
-
-                    if isAuctionActive == true then
-                        continue
-                    end
-
-                    local garageMinNW = getGarageMinNetWorth(i)
-                    if garageMinNW > 0 and myNetWorth < garageMinNW then
-                        continue
-                    end
-
-                    if areaname and type(areaname) == "string" and areaname ~= "" then
-                        if not areaSet[areaname] then
-                            areaSet[areaname] = true
-                            table.insert(dynamicAreas, areaname)
+                        if fireproximityprompt then
+                            pcall(function() fireproximityprompt(prompt) end)
+                        else
+                            pcall(function() prompt:InputHoldBegin(); task.wait(prompt.HoldDuration); prompt:InputHoldEnd() end)
                         end
 
-                        if selectedArea and selectedArea == areaname then
-                            local auctionZone = i:FindFirstChild("AuctionZone")
-                            local promptPart = i:FindFirstChild("EntrySquare") and i.EntrySquare:FindFirstChild("PromptPart")
-                            local enterAuctionPrompt = promptPart and promptPart:FindFirstChild("EnterAuction")
-
-                            if enterAuctionPrompt and hrp then
-                                -- 1. วาร์ปไปหาตู้เป้าหมาย
-                                if auctionZone then
-                                    if auctionZone:IsA("BasePart") then
-                                        hrp.CFrame = auctionZone.CFrame + Vector3.new(0, 3, 0)
-                                    elseif auctionZone:IsA("Model") then
-                                        hrp.CFrame = auctionZone:GetPivot() + Vector3.new(0, 3, 0)
-                                    end
-                                    task.wait(0.2)
-                                end
-
-                                enterAuctionPrompt.MaxActivationDistance = 9999
-                                enterAuctionPrompt.RequiresLineOfSight = false
-                                enterAuctionPrompt.HoldDuration = 0
-
-                                -- 2. สั่งยิง Prompt เพื่อเข้าสู่หน้าประมูล
-                                if fireproximityprompt then
-                                    fireproximityprompt(enterAuctionPrompt)
-                                end
-                                
-                                -- 3. รอจนกว่า InAuction ของตู้จะเป็น true
-                                local timeout = tick() + 3
-                                while AutoAuctionT.Value and i.Parent and i:GetAttribute("InAuction") ~= true do
-                                    if tick() > timeout then break end
-                                    task.wait(0.1)
-                                end
-                                task.wait(0.5)
-                            end
-
-                            -- 4. ดึงราคาเริ่มต้นประมูลมาเทียบกับ MinStartPrice
-                            local userMinPrice = tonumber(Options.MinStartPrice and Options.MinStartPrice.Value) or 0
-                            local currentStartBid = AuctionStartingBid()
-
-                            -- ถ้าราคาเปิดตัวน้อยกว่าขั้นต่ำ
-                            if currentStartBid < userMinPrice then
-                                -- สั่งปิด AutoBid ทันทีเพราะไม่ต้องการตู้นี้
-                                if Toggles and Toggles.AutoBidT then
-                                    Toggles.AutoBidT:SetValue(false)
-                                end
-
-                                -- ส่งสัญญาณ Leave ออกจากห้องประมูล
-                                local leaveEvent = game:GetService("ReplicatedStorage").Events.Auction:FindFirstChild("LeaveAuction")
-                                if leaveEvent then
-                                    leaveEvent:InvokeServer()
-                                end
-
-                                -- วาร์ปถอยออกมาห่างๆ จากตู้
-                                if auctionZone and hrp then
-                                    local escapeCFrame = auctionZone:IsA("BasePart") and auctionZone.CFrame or auctionZone:GetPivot()
-                                    hrp.CFrame = escapeCFrame + Vector3.new(0, 5, 15)
-                                    task.wait(1)
-                                end
-
-                                -- รอจนกว่า InAuction จะปลดล็อกเป็น false ค่อยไปตู้ถัดไป
-                                while AutoAuctionT.Value and i.Parent do
-                                    local currentStatus = i:GetAttribute("InAuction")
-                                    if not currentStatus or currentStatus == false then
-                                        break
-                                    end
-                                    task.wait(0.5)
-                                end
-
-                                continue
-                            end
-
-                            -- 5. ถ้าผ่าน (ราคามากกว่าหรือเท่ากับ Min) สั่งเปิด AutoBid เพื่อทำการประมูลต่อ
-                            if Toggles and Toggles.AutoBidT then
-                                Toggles.AutoBidT:SetValue(true)
-                            end
-
-                            -- รอจนกว่าการประมูลตู้นี้จะจบ (InAuction เปลี่ยนเป็น false)
-                            while AutoAuctionT.Value and i.Parent do
-                                if i:GetAttribute("InAuction") ~= true then
-                                    break
-                                end
-                                task.wait(1)
-                            end
-
-                            break
+                        if not waitForGarageState(garage, true, 3) then
+                            task.wait(0.25)
+                            continue
                         end
+
+                        -- Wait for the bidding screen and read its current opening bid.
+                        local bidReady = false
+                        local startBid
+                        local priceDeadline = os.clock() + 10
+                        repeat
+                            if not isRunning() or not garage.Parent or garage:GetAttribute("InAuction") ~= true then break end
+                            local playerInAuction = Player:GetAttribute("InAuction") == true
+                            local numericPrice = tonumber(AuctionStartingBid())
+                            if playerInAuction and numericPrice and numericPrice > 0 then
+                                startBid = numericPrice
+                                bidReady = true
+                                break
+                            end
+                            task.wait(1)
+                        until os.clock() >= priceDeadline
+
+                        if not isRunning() then break end
+                        if not bidReady then
+                            print(string.format("[AutoAuction] %s | Could not read opening bid (player/garage auction state or bid price not ready); auto bid skipped", garage.Name))
+                            waitForGarageState(garage, false, 300)
+                            moveAwayFromAuctionZone(zone)
+                            foundTarget = true
+                        else
+                            local minPrice = tonumber(Options.MinStartPrice and Options.MinStartPrice.Value) or 0
+                            if startBid < minPrice then
+                                print(string.format("[AutoAuction] %s | Opening bid %s < Min %s | below minimum; auto bid skipped", garage.Name, tostring(startBid), tostring(minPrice)))
+                                moveAwayFromAuctionZone(zone)
+                            else
+                                print(string.format("[AutoAuction] %s | Opening bid %s >= Min %s | meets minimum; AutoAuction bidding started", garage.Name, tostring(startBid), tostring(minPrice)))
+                                runAutoAuctionBids(garage)
+                            end
+
+                            waitForGarageState(garage, false, 300)
+                            moveAwayFromAuctionZone(zone)
+                            foundTarget = true
+                        end
+                    else
+                        foundTarget = true
+                        task.wait(0.5)
                     end
                 end
-
-                if Options.SelectAreaD then
-                    Options.SelectAreaD:SetValues(dynamicAreas)
-                end
-
-                task.wait(1)
             end
-        end)
-    end
+            if foundTarget and isRunning() then task.wait(0.5) else task.wait(1) end
+        end
+    end)
 end)
 
 local AutoBidT = AuctionMainLeftGroupbox:AddToggle("AutoBidT", {
@@ -408,7 +496,7 @@ AutoBidT:OnChanged(function(Value)
             while AutoBidT.Value do
                 if Player:GetAttribute("InAuction") == true or UIController:IsOpen("AuctionBidding") then
                     Bid:FireServer()
-                    task.wait(0.1)
+                    task.wait(0.01)
                 else
                     task.wait(1)
                 end
