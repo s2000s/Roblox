@@ -6,10 +6,17 @@ local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 local Options = Library.Options
 local Toggles = Library.Toggles
 
+local function isNotificationSelected(name)
+    local selected = Options.SelectNotifyD and Options.SelectNotifyD.Value
+    local notifyToggle = Toggles.ToggleNotify
+    return notifyToggle ~= nil
+        and notifyToggle.Value == true
+        and type(selected) == "table"
+        and selected[name] == true
+end
+
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
-
-print("2222222222222222")
 
 local Window = Library:CreateWindow({
     Title = "Storage Hunters",
@@ -112,16 +119,47 @@ local PoliceChase = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Misc"
 local Garage = workspace:WaitForChild("_Debris"):WaitForChild("Garages")
 local SeizedGarageRemote = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Misc"):WaitForChild("SeizedGarage")
 local seizedGarageGuids = {}
+local notifiedPoliceGarageGuids = {}
+
+local function notifyPoliceGarage(guid)
+    if type(guid) ~= "string" then return false end
+    if notifiedPoliceGarageGuids[guid] then return true end
+
+    for _, garage in ipairs(Garage:GetChildren()) do
+        if garage:IsA("Model") and garage:GetAttribute("GUID") == guid then
+            if not isNotificationSelected("Police Container") then return false end
+
+            notifiedPoliceGarageGuids[guid] = true
+            local areaName = garage:GetAttribute("AreaName") or "Unknown Area"
+            local inAuction = garage:GetAttribute("InAuction") == true
+            Library:Notify({
+                Title = "POLICE CONTAINER",
+                Description = string.format("Area: %s\nContainer: %s\nStatus: %s", areaName, garage.Name, inAuction and "Already In Auction" or "Ready"),
+                Time = 10,
+            })
+            return true
+        end
+    end
+    return false
+end
 
 SeizedGarageRemote.OnClientEvent:Connect(function(action, guid)
     if action == "Set" and type(guid) == "string" then
         table.clear(seizedGarageGuids)
         seizedGarageGuids[guid] = true
+        task.spawn(function()
+            for _ = 1, 50 do
+                if notifyPoliceGarage(guid) then return end
+                task.wait(0.2)
+            end
+        end)
     elseif action == "Clear" then
         if type(guid) == "string" then
             seizedGarageGuids[guid] = nil
+            notifiedPoliceGarageGuids[guid] = nil
         else
             table.clear(seizedGarageGuids)
+            table.clear(notifiedPoliceGarageGuids)
         end
     end
 end)
@@ -237,6 +275,8 @@ local MinStartPrice = AuctionMainLeftGroupbox:AddInput("MinStartPrice", {
 	Callback = function(Value)
 	end,
 })
+
+AuctionMainLeftGroupbox:AddDivider("Automation")
 
 local AutoAuctionT = AuctionMainLeftGroupbox:AddToggle("AutoAuctionT", {
     Text = "Auto Auction",
@@ -500,6 +540,191 @@ AutoBidT:OnChanged(function(Value)
                 else
                     task.wait(1)
                 end
+            end
+        end)
+    end
+end)
+
+local function getMyVehicle()
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.SeatPart and hum.SeatPart.Name == "DriveSeat" then
+        return hum.SeatPart.Parent
+    end
+
+    local equippedGuid = Player:GetAttribute("EquippedVehicle")
+    local searchFolders = { workspace, workspace:FindFirstChild("_Vehicles"), workspace:FindFirstChild("Vehicles") }
+    
+    for _, folder in ipairs(searchFolders) do
+        if folder then
+            for _, car in ipairs(folder:GetChildren()) do
+                if car:IsA("Model") then
+                    local carGuid = car:GetAttribute("VehicleGUID") or car:GetAttribute("GUID")
+                    local ownerId = car:GetAttribute("OwnerUserId") or car:GetAttribute("Owner") or car:GetAttribute("OwnerId")
+                    
+                    if (equippedGuid and equippedGuid ~= "" and carGuid == equippedGuid) or 
+                       (ownerId and (ownerId == Player.UserId or ownerId == tostring(Player.UserId) or ownerId == Player.Name)) then
+                        return car
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local loadItemT = AuctionMainLeftGroupbox:AddToggle("loadItemT", {
+    Text = "Auto Unload",
+    Default = false,
+})
+
+loadItemT:OnChanged(function(Value)
+    if Value then
+        task.spawn(function()
+            while loadItemT.Value do
+                local equippedVehicle = Player:GetAttribute("EquippedVehicle")
+                
+                if equippedVehicle and equippedVehicle ~= "" then
+                    local success, items = pcall(function()
+                        return VehicleEvents.GetVehicleItems:InvokeServer(equippedVehicle)
+                    end)
+                    
+                    if success and type(items) == "table" then
+                        local itemGuids = {}
+                        
+                        for guid, _ in pairs(items) do
+                            table.insert(itemGuids, guid)
+                        end
+
+                        if #itemGuids > 0 then
+                            VehicleEvents.TransferVehicleItemsToInventory:FireServer(itemGuids)
+                        end
+                    end
+                end
+                task.wait(1)
+            end
+        end)
+    end
+end)
+
+local PickUpT = AuctionMainLeftGroupbox:AddToggle("PickUpT", {
+    Text = "Auto Pick Up",
+    Default = false,
+})
+
+PickUpT:OnChanged(function(state)
+    if state then
+        task.spawn(function()
+            while PickUpT.Value do
+                local myCar = getMyVehicle()
+                local isOverweight = false
+
+                if myCar then
+                    local currentWeight = tonumber(myCar:GetAttribute("CargoWeight")) or 0
+                    local weightLimit = tonumber(myCar:GetAttribute("CargoWeightLimit")) or 0
+
+                    if weightLimit > 0 and currentWeight >= (weightLimit - 0.01) then
+                        isOverweight = true
+                    end
+                end
+
+                if isOverweight then
+                    if loadItemT.Value and myCar then
+                        local driveSeat = myCar:FindFirstChild("DriveSeat")
+                        local promptLocation = driveSeat and driveSeat:FindFirstChild("PromptLocation")
+                        local vehiclePrompt = promptLocation and promptLocation:FindFirstChild("VehiclePrompt")
+
+                        if not vehiclePrompt then
+                            vehiclePrompt = myCar:FindFirstChildWhichIsA("ProximityPrompt", true)
+                            promptLocation = vehiclePrompt and vehiclePrompt.Parent
+                        end
+
+                        if vehiclePrompt and promptLocation then
+                            local targetCFrame = nil
+                            if promptLocation:IsA("BasePart") then
+                                targetCFrame = promptLocation.CFrame
+                            elseif promptLocation:IsA("Attachment") then
+                                targetCFrame = promptLocation.WorldCFrame
+                            elseif promptLocation:IsA("Model") then
+                                targetCFrame = promptLocation:GetPivot()
+                            else
+                                targetCFrame = myCar:GetPivot()
+                            end
+
+                            if hrp and targetCFrame then
+                                hrp.CFrame = targetCFrame * CFrame.new(0, 2, 0)
+                                task.wait(0.1)
+                            end
+
+                            vehiclePrompt.MaxActivationDistance = 9999
+                            vehiclePrompt.RequiresLineOfSight = false
+                            vehiclePrompt.HoldDuration = 0
+
+                            if fireproximityprompt then
+                                fireproximityprompt(vehiclePrompt)
+                            end
+
+                            task.wait(0.5)
+                        end
+                    end
+                else
+                    if carryables then
+                        for _, item in ipairs(carryables:GetChildren()) do
+                            if not PickUpT.Value then break end
+
+                            if item:IsA("Model") then
+                                local owner = item:GetAttribute("Owner")
+                                
+                                if owner and (owner == Player.UserId or owner == tostring(Player.UserId) or owner == Player.Name) then
+                                    
+                                    -- ระบบค้นหา ProximityPrompt แบบครอบคลุมทุกกรณี
+                                    local prompt = nil
+                                    
+                                    -- วิธีที่ 1: หา ProximityPrompt ตัวแรกที่เจอใน Model นี้แบบลึกสุดใจ (Deep Search)
+                                    prompt = item:FindFirstChildWhichIsA("ProximityPrompt", true)
+                                    
+                                    -- วิธีที่ 2 (สำรอง): ถ้าวิธีแรกไม่เจอ ให้ลองหาตามชื่อยอดฮิต เช่น "PickupPrompt" หรือ "Prompt"
+                                    if not prompt then
+                                        for _, descendant in ipairs(item:GetDescendants()) do
+                                            if descendant:IsA("ProximityPrompt") then
+                                                prompt = descendant
+                                                break
+                                            end
+                                        end
+                                    end
+                                    
+                                    if prompt then
+                                        -- หาพาร์ทสำหรับให้ตัวละครวาร์ปไปเกาะ (เอาตัว Prompt เป็นหลัก ถ้าไม่มีค่อยใช้ PrimaryPart)
+                                        local targetPart = prompt.Parent
+                                        if hrp then
+                                            if targetPart and targetPart:IsA("BasePart") then
+                                                hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
+                                            elseif item.PrimaryPart then
+                                                hrp.CFrame = item.PrimaryPart.CFrame * CFrame.new(0, 2, 0)
+                                            end
+                                            task.wait(0.05)
+                                        end
+
+                                        -- ตั้งค่า Prompt ให้กดได้ทันที
+                                        if prompt.HoldDuration ~= 0 or prompt.MaxActivationDistance < 9999 then
+                                            prompt.MaxActivationDistance = 9999
+                                            prompt.RequiresLineOfSight = false
+                                            prompt.HoldDuration = 0
+                                        end
+                                        
+                                        if fireproximityprompt then
+                                            fireproximityprompt(prompt)
+                                        end
+
+                                        task.wait(0.15)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                
+                task.wait(0.5)
             end
         end)
     end
@@ -784,191 +1009,6 @@ end)
 
 local MiscMainLeftGroupbox = Tabs.Main:AddLeftGroupbox("Misc")
 
-local function getMyVehicle()
-    local char = Player.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum and hum.SeatPart and hum.SeatPart.Name == "DriveSeat" then
-        return hum.SeatPart.Parent
-    end
-
-    local equippedGuid = Player:GetAttribute("EquippedVehicle")
-    local searchFolders = { workspace, workspace:FindFirstChild("_Vehicles"), workspace:FindFirstChild("Vehicles") }
-    
-    for _, folder in ipairs(searchFolders) do
-        if folder then
-            for _, car in ipairs(folder:GetChildren()) do
-                if car:IsA("Model") then
-                    local carGuid = car:GetAttribute("VehicleGUID") or car:GetAttribute("GUID")
-                    local ownerId = car:GetAttribute("OwnerUserId") or car:GetAttribute("Owner") or car:GetAttribute("OwnerId")
-                    
-                    if (equippedGuid and equippedGuid ~= "" and carGuid == equippedGuid) or 
-                       (ownerId and (ownerId == Player.UserId or ownerId == tostring(Player.UserId) or ownerId == Player.Name)) then
-                        return car
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
-
-local loadItemT = MiscMainLeftGroupbox:AddToggle("loadItemT", {
-    Text = "Auto Unload",
-    Default = false,
-})
-
-loadItemT:OnChanged(function(Value)
-    if Value then
-        task.spawn(function()
-            while loadItemT.Value do
-                local equippedVehicle = Player:GetAttribute("EquippedVehicle")
-                
-                if equippedVehicle and equippedVehicle ~= "" then
-                    local success, items = pcall(function()
-                        return VehicleEvents.GetVehicleItems:InvokeServer(equippedVehicle)
-                    end)
-                    
-                    if success and type(items) == "table" then
-                        local itemGuids = {}
-                        
-                        for guid, _ in pairs(items) do
-                            table.insert(itemGuids, guid)
-                        end
-
-                        if #itemGuids > 0 then
-                            VehicleEvents.TransferVehicleItemsToInventory:FireServer(itemGuids)
-                        end
-                    end
-                end
-                task.wait(1)
-            end
-        end)
-    end
-end)
-
-local PickUpT = MiscMainLeftGroupbox:AddToggle("PickUpT", {
-    Text = "Auto Pick Up",
-    Default = false,
-})
-
-PickUpT:OnChanged(function(state)
-    if state then
-        task.spawn(function()
-            while PickUpT.Value do
-                local myCar = getMyVehicle()
-                local isOverweight = false
-
-                if myCar then
-                    local currentWeight = tonumber(myCar:GetAttribute("CargoWeight")) or 0
-                    local weightLimit = tonumber(myCar:GetAttribute("CargoWeightLimit")) or 0
-
-                    if weightLimit > 0 and currentWeight >= (weightLimit - 0.01) then
-                        isOverweight = true
-                    end
-                end
-
-                if isOverweight then
-                    if loadItemT.Value and myCar then
-                        local driveSeat = myCar:FindFirstChild("DriveSeat")
-                        local promptLocation = driveSeat and driveSeat:FindFirstChild("PromptLocation")
-                        local vehiclePrompt = promptLocation and promptLocation:FindFirstChild("VehiclePrompt")
-
-                        if not vehiclePrompt then
-                            vehiclePrompt = myCar:FindFirstChildWhichIsA("ProximityPrompt", true)
-                            promptLocation = vehiclePrompt and vehiclePrompt.Parent
-                        end
-
-                        if vehiclePrompt and promptLocation then
-                            local targetCFrame = nil
-                            if promptLocation:IsA("BasePart") then
-                                targetCFrame = promptLocation.CFrame
-                            elseif promptLocation:IsA("Attachment") then
-                                targetCFrame = promptLocation.WorldCFrame
-                            elseif promptLocation:IsA("Model") then
-                                targetCFrame = promptLocation:GetPivot()
-                            else
-                                targetCFrame = myCar:GetPivot()
-                            end
-
-                            if hrp and targetCFrame then
-                                hrp.CFrame = targetCFrame * CFrame.new(0, 2, 0)
-                                task.wait(0.1)
-                            end
-
-                            vehiclePrompt.MaxActivationDistance = 9999
-                            vehiclePrompt.RequiresLineOfSight = false
-                            vehiclePrompt.HoldDuration = 0
-
-                            if fireproximityprompt then
-                                fireproximityprompt(vehiclePrompt)
-                            end
-
-                            task.wait(0.5)
-                        end
-                    end
-                else
-                    if carryables then
-                        for _, item in ipairs(carryables:GetChildren()) do
-                            if not PickUpT.Value then break end
-
-                            if item:IsA("Model") then
-                                local owner = item:GetAttribute("Owner")
-                                
-                                if owner and (owner == Player.UserId or owner == tostring(Player.UserId) or owner == Player.Name) then
-                                    
-                                    -- ระบบค้นหา ProximityPrompt แบบครอบคลุมทุกกรณี
-                                    local prompt = nil
-                                    
-                                    -- วิธีที่ 1: หา ProximityPrompt ตัวแรกที่เจอใน Model นี้แบบลึกสุดใจ (Deep Search)
-                                    prompt = item:FindFirstChildWhichIsA("ProximityPrompt", true)
-                                    
-                                    -- วิธีที่ 2 (สำรอง): ถ้าวิธีแรกไม่เจอ ให้ลองหาตามชื่อยอดฮิต เช่น "PickupPrompt" หรือ "Prompt"
-                                    if not prompt then
-                                        for _, descendant in ipairs(item:GetDescendants()) do
-                                            if descendant:IsA("ProximityPrompt") then
-                                                prompt = descendant
-                                                break
-                                            end
-                                        end
-                                    end
-                                    
-                                    if prompt then
-                                        -- หาพาร์ทสำหรับให้ตัวละครวาร์ปไปเกาะ (เอาตัว Prompt เป็นหลัก ถ้าไม่มีค่อยใช้ PrimaryPart)
-                                        local targetPart = prompt.Parent
-                                        if hrp then
-                                            if targetPart and targetPart:IsA("BasePart") then
-                                                hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
-                                            elseif item.PrimaryPart then
-                                                hrp.CFrame = item.PrimaryPart.CFrame * CFrame.new(0, 2, 0)
-                                            end
-                                            task.wait(0.05)
-                                        end
-
-                                        -- ตั้งค่า Prompt ให้กดได้ทันที
-                                        if prompt.HoldDuration ~= 0 or prompt.MaxActivationDistance < 9999 then
-                                            prompt.MaxActivationDistance = 9999
-                                            prompt.RequiresLineOfSight = false
-                                            prompt.HoldDuration = 0
-                                        end
-                                        
-                                        if fireproximityprompt then
-                                            fireproximityprompt(prompt)
-                                        end
-
-                                        task.wait(0.15)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-                
-                task.wait(0.5)
-            end
-        end)
-    end
-end)
-
 local policeConnections = {}
 local hudAddedConnection = nil
 
@@ -1106,11 +1146,13 @@ AutoGradingT:OnChanged(function(Value)
                                             formattedGrade = "⭐⭐⭐"
                                         end
 
-                                        Library:Notify({
-                                            Title = "SUCCESS • COLLECTED",
-                                            Description = string.format("[%d] %s -> %s", slotIndex, itemName, formattedGrade),
-                                            Time = 10
-                                        })
+                                        if isNotificationSelected("Grade Item") then
+                                            Library:Notify({
+                                                Title = "SUCCESS • COLLECTED",
+                                                Description = string.format("[%d] %s -> %s", slotIndex, itemName, formattedGrade),
+                                                Time = 10
+                                            })
+                                        end
 
                                         task.wait(1.2)
                                         pcall(function()
@@ -1206,11 +1248,13 @@ AutoGradingT:OnChanged(function(Value)
                                         durationText = math.floor(slotDuration / 60) .. "m"
                                     end
 
-                                    Library:Notify({
-                                        Title = "START • GRADING",
-                                        Description = string.format("[%d] %s (%s)", slotIndex, itemName, durationText),
-                                        Time = 10
-                                    })
+                                    if isNotificationSelected("Grade Item") then
+                                        Library:Notify({
+                                            Title = "START • GRADING",
+                                            Description = string.format("[%d] %s (%s)", slotIndex, itemName, durationText),
+                                            Time = 10
+                                        })
+                                    end
 
                                     table.remove(gradableList, table.find(gradableList, sortedItem))
                                     task.wait(1.5)
@@ -1226,6 +1270,77 @@ AutoGradingT:OnChanged(function(Value)
         end)
     end
 end)
+
+local LostItemMainLeftGroupbox = Tabs.Main:AddRightGroupbox("Lost Item")
+
+local AutoCollectLostItemsT = LostItemMainLeftGroupbox:AddToggle("AutoCollectLostItemsT", {
+    Text = "Auto Collect Lost Items",
+    Default = false,
+})
+
+local autoCollectLostRunId = 0
+AutoCollectLostItemsT:OnChanged(function(Value)
+    autoCollectLostRunId = autoCollectLostRunId + 1
+    local runId = autoCollectLostRunId
+    if not Value then return end
+
+    task.spawn(function()
+        local function isRunning()
+            return AutoCollectLostItemsT.Value and autoCollectLostRunId == runId
+        end
+
+        local uiEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("UI")
+        local getLostItems = uiEvents:WaitForChild("GetLostItems")
+        local claimLostItem = uiEvents:WaitForChild("ClaimLostItem")
+
+        while isRunning() do
+            for _, areaName in ipairs(Area) do
+                if not isRunning() then break end
+
+                local getOk, result = pcall(function()
+                    return getLostItems:InvokeServer(areaName)
+                end)
+
+                local items = getOk and type(result) == "table" and result.items
+                if type(items) == "table" then
+                    for guid in pairs(items) do
+                        if not isRunning() then break end
+                        if type(guid) == "string" then
+                            local claimOk, claimResult = pcall(function()
+                                return claimLostItem:InvokeServer(areaName, guid)
+                            end)
+                            if not claimOk then
+                                -- warn(string.format("[AutoCollectLostItems] Claim failed for %s in %s: %s", guid, areaName, tostring(claimResult)))
+                            end
+                            task.wait(0.15)
+                        end
+                    end
+                end
+            end
+
+            task.wait(2)
+        end
+    end)
+end)
+
+local NotificationMainRightGroupbox = Tabs.Main:AddRightGroupbox("Notification")
+
+local SelectNotifyD = NotificationMainRightGroupbox:AddDropdown("SelectNotifyD", {
+    Text = "Select",
+    Values = { "Grade Item", "Police Container" },
+    Default = {},
+    Multi = true,
+    AllowNull = true
+})
+
+local ToggleNotify = NotificationMainRightGroupbox:AddToggle("ToggleNotify", {
+    Text = "Enable Notification",
+    Default = false
+})
+ToggleNotify:OnChanged(function(Value)
+    
+end)
+
 
 ---------------------------------------------------------------------
 -- UI Settings Tab
