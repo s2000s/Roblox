@@ -348,12 +348,26 @@ AutoAuctionT:OnChanged(function(Value)
             return readNumberText(nwStat:GetAttribute("RawValue"))
         end
 
-        local function stopIfInventoryFull()
+        local function isInventoryFull()
             local inventoryCount = tonumber(Player:GetAttribute("InventoryCount"))
             local inventoryCap = tonumber(Player:GetAttribute("InventoryCap"))
-            if inventoryCount and inventoryCap and inventoryCap > 0 and inventoryCount >= inventoryCap then
-                print(string.format("[AutoAuction] Inventory full (%s/%s); stopping Auto Auction", tostring(inventoryCount), tostring(inventoryCap)))
-                return true
+            return inventoryCount ~= nil and inventoryCap ~= nil and inventoryCap > 0 and inventoryCount >= inventoryCap,
+                inventoryCount, inventoryCap
+        end
+
+        local function waitForInventorySpace(garage)
+            local reportedFull = false
+            while isRunning() do
+                local full, inventoryCount, inventoryCap = isInventoryFull()
+                if not full then return true end
+                if garage and (not garage.Parent or garage:GetAttribute("InAuction") ~= true) then
+                    return true
+                end
+                if not reportedFull then
+                    print(string.format("[AutoAuction] Inventory full (%s/%s); pausing until space is available", tostring(inventoryCount), tostring(inventoryCap)))
+                    reportedFull = true
+                end
+                task.wait(0.25)
             end
             return false
         end
@@ -366,6 +380,29 @@ AutoAuctionT:OnChanged(function(Value)
                 task.wait(0.1)
             until os.clock() >= deadline
             return garage.Parent ~= nil and garage:GetAttribute("InAuction") == expected
+        end
+
+        local function isPlayerAuctionActive()
+            local playerInAuction = Player:GetAttribute("InAuction") == true
+            local uiOk, biddingUiOpen = pcall(function()
+                return UIController:IsOpen("AuctionBidding")
+            end)
+            return playerInAuction or (uiOk and biddingUiOpen == true)
+        end
+
+        local function waitForPlayerAuctionEnd(timeoutSeconds)
+            local deadline = os.clock() + timeoutSeconds
+            local inactiveSince = nil
+            while isRunning() and os.clock() < deadline do
+                if isPlayerAuctionActive() then
+                    inactiveSince = nil
+                else
+                    inactiveSince = inactiveSince or os.clock()
+                    if os.clock() - inactiveSince >= 0.75 then return true end
+                end
+                task.wait(0.1)
+            end
+            return false
         end
 
         local function getAuctionZoneCFrame(zone)
@@ -381,16 +418,17 @@ AutoAuctionT:OnChanged(function(Value)
         local function moveAwayFromAuctionZone(zone)
             local zoneCFrame = getAuctionZoneCFrame(zone)
             local root = hrp
-            if not zoneCFrame or not root or not root.Parent then return false end
-
-            local offset = root.Position - zoneCFrame.Position
-            if offset.Magnitude >= 30 then return false end
-            local horizontalOffset = Vector3.new(offset.X, 0, offset.Z)
-            local direction = horizontalOffset.Magnitude > 0.01 and horizontalOffset.Unit or Vector3.new(-zoneCFrame.LookVector.X, 0, -zoneCFrame.LookVector.Z)
-            if direction.Magnitude <= 0.01 then direction = Vector3.new(1, 0, 0) end
-            direction = direction.Unit
-            local destination = zoneCFrame.Position + direction * 35 + Vector3.new(0, 3, 0)
-            root.CFrame = CFrame.new(destination)
+            if zoneCFrame and root and root.Parent then
+                local offset = root.Position - zoneCFrame.Position
+                if offset.Magnitude < 30 then
+                    local horizontalOffset = Vector3.new(offset.X, 0, offset.Z)
+                    local direction = horizontalOffset.Magnitude > 0.01 and horizontalOffset.Unit or Vector3.new(-zoneCFrame.LookVector.X, 0, -zoneCFrame.LookVector.Z)
+                    if direction.Magnitude <= 0.01 then direction = Vector3.new(1, 0, 0) end
+                    direction = direction.Unit
+                    local destination = zoneCFrame.Position + direction * 35 + Vector3.new(0, 3, 0)
+                    root.CFrame = CFrame.new(destination)
+                end
+            end
 
             local events = ReplicatedStorage:FindFirstChild("Events")
             local auctionEvents = events and events:FindFirstChild("Auction")
@@ -408,9 +446,76 @@ AutoAuctionT:OnChanged(function(Value)
             return true
         end
 
+        local function collectAuctionCarryables(timeoutSeconds)
+            local deadline = os.clock() + timeoutSeconds
+            local lastAttemptByItem = {}
+            local emptySince = nil
+
+            while isRunning() and os.clock() < deadline do
+                local ownedItems = {}
+                for _, item in ipairs(carryables:GetChildren()) do
+                    if item:IsA("Model") then
+                        local owner = item:GetAttribute("Owner")
+                        if owner == Player.UserId or owner == tostring(Player.UserId) or owner == Player.Name then
+                            table.insert(ownedItems, item)
+                        end
+                    end
+                end
+
+                if #ownedItems == 0 then
+                    emptySince = emptySince or os.clock()
+                    if os.clock() - emptySince >= 0.75 then return true end
+                else
+                    emptySince = nil
+                    local autoPickupEnabled = Toggles and Toggles.PickUpT and Toggles.PickUpT.Value == true
+                    if not autoPickupEnabled then
+                        for _, item in ipairs(ownedItems) do
+                            if not isRunning() then break end
+                            if os.clock() - (lastAttemptByItem[item] or 0) >= 1 then
+                                local prompt = item:FindFirstChildWhichIsA("ProximityPrompt", true)
+                                local targetPart = prompt and prompt.Parent
+                                if prompt and hrp and hrp.Parent then
+                                    if targetPart and targetPart:IsA("BasePart") then
+                                        hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
+                                    elseif item.PrimaryPart then
+                                        hrp.CFrame = item.PrimaryPart.CFrame * CFrame.new(0, 2, 0)
+                                    end
+                                    lastAttemptByItem[item] = os.clock()
+                                    task.wait(0.1)
+                                    if fireproximityprompt then
+                                        pcall(function() fireproximityprompt(prompt) end)
+                                    else
+                                        pcall(function()
+                                            prompt:InputHoldBegin()
+                                            task.wait(prompt.HoldDuration)
+                                            prompt:InputHoldEnd()
+                                        end)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                task.wait(0.2)
+            end
+
+            local remaining = 0
+            for _, item in ipairs(carryables:GetChildren()) do
+                local owner = item:IsA("Model") and item:GetAttribute("Owner")
+                if owner == Player.UserId or owner == tostring(Player.UserId) or owner == Player.Name then
+                    remaining = remaining + 1
+                end
+            end
+            if remaining > 0 then
+                print(string.format("[AutoAuction] Carryable collection timed out with %d item(s) remaining", remaining))
+            end
+            return remaining == 0
+        end
+
         local function runAutoAuctionBids(garage)
-            while isRunning() and garage.Parent and garage:GetAttribute("InAuction") == true do
-                if stopIfInventoryFull() then break end
+            while isRunning() and garage.Parent and garage:GetAttribute("InAuction") == true and isPlayerAuctionActive() do
+                if not waitForInventorySpace(garage) then break end
+                if not garage.Parent or garage:GetAttribute("InAuction") ~= true or not isPlayerAuctionActive() then break end
                 local uiOk, biddingUiOpen = pcall(function()
                     return UIController:IsOpen("AuctionBidding")
                 end)
@@ -424,7 +529,7 @@ AutoAuctionT:OnChanged(function(Value)
         end
 
         while isRunning() do
-            if stopIfInventoryFull() then break end
+            if not waitForInventorySpace() then break end
 
             local dynamicAreas, areaSet = {}, {}
             local function addArea(name)
@@ -488,7 +593,7 @@ AutoAuctionT:OnChanged(function(Value)
                     local zoneCFrame = getAuctionZoneCFrame(zone)
 
                     if prompt and prompt:IsA("ProximityPrompt") and hrp then
-                        if stopIfInventoryFull() then break end
+                        if not waitForInventorySpace() then break end
                         print(string.format("[AutoAuction] Target %s | player Net Worth: %s | garage minimum: %s", garage.Name, tostring(myNetWorth), tostring(minWorth)))
                         if zoneCFrame then
                             hrp.CFrame = zoneCFrame + Vector3.new(0, 3, 0)
@@ -526,7 +631,6 @@ AutoAuctionT:OnChanged(function(Value)
                         if not isRunning() then break end
                         if not bidReady then
                             print(string.format("[AutoAuction] %s | Could not read opening bid (player/garage auction state or bid price not ready); auto bid skipped", garage.Name))
-                            waitForGarageState(garage, false, 300)
                             moveAwayFromAuctionZone(zone)
                             foundTarget = true
                         else
@@ -534,14 +638,19 @@ AutoAuctionT:OnChanged(function(Value)
                             if startBid < minPrice then
                                 print(string.format("[AutoAuction] %s | Opening bid %s < Min %s | below minimum; auto bid skipped", garage.Name, tostring(startBid), tostring(minPrice)))
                                 moveAwayFromAuctionZone(zone)
+                                foundTarget = true
                             else
                                 print(string.format("[AutoAuction] %s | Opening bid %s >= Min %s | meets minimum; AutoAuction bidding started", garage.Name, tostring(startBid), tostring(minPrice)))
                                 runAutoAuctionBids(garage)
+                                local auctionEnded = waitForPlayerAuctionEnd(300)
+                                if auctionEnded and isRunning() then
+                                    collectAuctionCarryables(30)
+                                elseif isRunning() then
+                                    print(string.format("[AutoAuction] %s | Could not confirm player's auction ended; leaving auction zone", garage.Name))
+                                end
+                                if isRunning() then moveAwayFromAuctionZone(zone) end
+                                foundTarget = true
                             end
-
-                            waitForGarageState(garage, false, 300)
-                            moveAwayFromAuctionZone(zone)
-                            foundTarget = true
                         end
                     else
                         foundTarget = true
