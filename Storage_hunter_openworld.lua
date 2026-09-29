@@ -52,34 +52,6 @@ local VirtualUser = game:GetService("VirtualUser")
 local TweenService = game:GetService("TweenService")
 local UIController = require(ReplicatedStorage.Modules.UIController)
 
--- Modules
-local Items = require(ReplicatedStorage.Modules.Items)
-local MutatorModule = pcall(function() return require(ReplicatedStorage.Modules.MutatorModule) end) and require(ReplicatedStorage.Modules.MutatorModule) or nil
-local GameConfig = pcall(function() return require(ReplicatedStorage.Modules.GameConfig) end) and require(ReplicatedStorage.Modules.GameConfig) or nil
-local GradingModule = GameConfig and GameConfig.Grading or nil
-
-local function isTrophyItemData(itemData)
-    if type(itemData) ~= "table" then return false end
-    if itemData.IsTrophy == true then return true end
-
-    local itemId = itemData.ItemId
-    local itemDef = itemId and (Items[tostring(itemId)] or Items[itemId])
-    if itemDef and (itemDef.IsTrophy == true or itemDef.Trophy == true) then return true end
-
-    local names = {
-        itemData.Name,
-        itemData.DisplayName,
-        itemDef and itemDef.Name,
-        itemDef and itemDef.DisplayName,
-    }
-    for _, name in pairs(names) do
-        if type(name) == "string" and string.find(string.lower(name), "trophy", 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
 local Player = Players.LocalPlayer
 if not Player then
     Player = Players.PlayerAdded:Wait()
@@ -140,6 +112,79 @@ local PoliceChase = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Misc"
 
 local Garage = workspace:WaitForChild("_Debris"):WaitForChild("Garages")
 local SeizedGarageRemote = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Misc"):WaitForChild("SeizedGarage")
+
+local LocksmithEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Locksmith")
+local GetLockableItemsRemote = LocksmithEvents:WaitForChild("GetLockableItems")
+local GetLocksmithSlotStateRemote = LocksmithEvents:WaitForChild("GetSlotState")
+local StartLocksmithRemote = LocksmithEvents:WaitForChild("StartLocksmith")
+local OpenSafeRemote = LocksmithEvents:WaitForChild("OpenSafe")
+local safeItemGuids = {}
+local lockableItemsCache = {}
+local lockableItemsCacheTime = -math.huge
+
+local function refreshLockableItemsCache(forceRefresh)
+    if not forceRefresh and os.clock() - lockableItemsCacheTime < 2 then
+        return lockableItemsCache
+    end
+
+    lockableItemsCacheTime = os.clock()
+    local ok, result = pcall(function()
+        return GetLockableItemsRemote:InvokeServer()
+    end)
+    if not ok or type(result) ~= "table" or type(result.items) ~= "table" then
+        return lockableItemsCache
+    end
+
+    lockableItemsCache = result.items
+    lockableItemsCacheTime = os.clock()
+    for _, itemInfo in ipairs(lockableItemsCache) do
+        if type(itemInfo) == "table" and type(itemInfo.guid) == "string" then
+            safeItemGuids[itemInfo.guid] = true
+        end
+    end
+    return lockableItemsCache
+end
+
+local function isSafeItemGuid(guid)
+    if type(guid) ~= "string" then return false end
+    refreshLockableItemsCache(false)
+    return safeItemGuids[guid] == true
+end
+
+
+-- Modules
+local Items = require(ReplicatedStorage.Modules.Items)
+local MutatorModule = pcall(function() return require(ReplicatedStorage.Modules.MutatorModule) end) and require(ReplicatedStorage.Modules.MutatorModule) or nil
+local GameConfig = pcall(function() return require(ReplicatedStorage.Modules.GameConfig) end) and require(ReplicatedStorage.Modules.GameConfig) or nil
+local GradingModule = GameConfig and GameConfig.Grading or nil
+
+local Area = {
+    "Junk Yard",
+    "Back Alley",
+    "Farmyard",
+    "Shipyard",
+    "Jurassic",
+    "Cargo Ship",
+}
+
+local Rarity = {
+    "Junk",
+    "Uncommon",
+    "Rare",
+    "Epic",
+    "Legendary",
+    "Mythical"
+}
+
+local RarityRank = {
+    ["Mythical"] = 6,
+    ["Legendary"] = 5,
+    ["Epic"] = 4,
+    ["Rare"] = 3,
+    ["Uncommon"] = 2,
+    ["Junk"] = 1
+}
+
 local seizedGarageGuids = {}
 local notifiedPoliceGarageGuids = {}
 
@@ -198,32 +243,27 @@ local function isPoliceGarage(garage)
     return type(guid) == "string" and seizedGarageGuids[guid] == true
 end
 
-local Area = {
-    "Junk Yard",
-    "Back Alley",
-    "Farmyard",
-    "Shipyard",
-    "Jurassic",
-    "Cargo Ship",
-}
+local function isTrophyItemData(itemData)
+    if type(itemData) ~= "table" then return false end
+    if itemData.IsTrophy == true then return true end
 
-local Rarity = {
-    "Junk",
-    "Uncommon",
-    "Rare",
-    "Epic",
-    "Legendary",
-    "Mythical"
-}
+    local itemId = itemData.ItemId
+    local itemDef = itemId and (Items[tostring(itemId)] or Items[itemId])
+    if itemDef and (itemDef.IsTrophy == true or itemDef.Trophy == true) then return true end
 
-local RarityRank = {
-    ["Mythical"] = 6,
-    ["Legendary"] = 5,
-    ["Epic"] = 4,
-    ["Rare"] = 3,
-    ["Uncommon"] = 2,
-    ["Junk"] = 1
-}
+    local names = {
+        itemData.Name,
+        itemData.DisplayName,
+        itemDef and itemDef.Name,
+        itemDef and itemDef.DisplayName,
+    }
+    for _, name in pairs(names) do
+        if type(name) == "string" and string.find(string.lower(name), "trophy", 1, true) then
+            return true
+        end
+    end
+    return false
+end
 
 local function calculateItemValue(itemData)
     if type(itemData) ~= "table" then return 0 end
@@ -480,7 +520,7 @@ AutoAuctionT:OnChanged(function(Value)
                                         hrp.CFrame = item.PrimaryPart.CFrame * CFrame.new(0, 2, 0)
                                     end
                                     lastAttemptByItem[item] = os.clock()
-                                    task.wait(0.1)
+                                    task.wait(0.5)
                                     if fireproximityprompt then
                                         pcall(function() fireproximityprompt(prompt) end)
                                     else
@@ -955,7 +995,7 @@ AutoStockT:OnChanged(function(Value)
                                     end
                                 end
                                 
-                                if not isTrophyItem and not hasBuffs and not isReservedForGrading and not isFavorited and not isIgnoredRarity and fitsOnShelf then
+                                if not isSafeItemGuid(guid) and not isTrophyItem and not hasBuffs and not isReservedForGrading and not isFavorited and not isIgnoredRarity and fitsOnShelf then
                                     table.insert(itemGuids, guid)
                                 end
                             end
@@ -1119,7 +1159,7 @@ QuickSellT:OnChanged(function(Value)
                                             end
                                         end
 
-                                        if not isTrophyItem and not isFavorited and not hasBuffs and not isReservedForGrading and not isIgnoredRarity then
+                                        if not isSafeItemGuid(guid) and not isTrophyItem and not isFavorited and not hasBuffs and not isReservedForGrading and not isIgnoredRarity then
                                             table.insert(guidsToSell, guid)
                                             if #guidsToSell >= 15 then break end
                                         end
@@ -1207,6 +1247,125 @@ end)
 ---------------------------------------------------------------------
 -- Grading Groupbox (อัปเดตระบบจัดลำดับและดึงรอบละหลายชิ้น)
 ---------------------------------------------------------------------
+local UnlockSafeRightGroupbox = Tabs.Main:AddRightGroupbox("Locksmith")
+
+local AutoUnlockSafeT = UnlockSafeRightGroupbox:AddToggle("AutoUnlockSafeT", {
+    Text = "Auto Unlock Safe",
+    Default = false,
+})
+
+local locksmithAttempts = {}
+local openSafeAttempts = {}
+local autoUnlockSafeRunId = 0
+AutoUnlockSafeT:OnChanged(function(Value)
+    autoUnlockSafeRunId = autoUnlockSafeRunId + 1
+    local runId = autoUnlockSafeRunId
+    if not Value then return end
+
+    task.spawn(function()
+        while AutoUnlockSafeT.Value and autoUnlockSafeRunId == runId do
+            local lockableItems = refreshLockableItemsCache(true)
+            local stateOk, slotState = pcall(function()
+                return GetLocksmithSlotStateRemote:InvokeServer()
+            end)
+
+            if stateOk and type(slotState) == "table" then
+                local unlockedCount = math.max(0, math.floor(tonumber(slotState.unlockedCount) or 1))
+                local slots = type(slotState.slots) == "table" and slotState.slots or {}
+                local occupiedGuids = {}
+
+                for slotIndex = 1, unlockedCount do
+                    local slotData = slots[tostring(slotIndex)] or slots[slotIndex]
+                    if type(slotData) == "table" and type(slotData.ItemGUID) == "string" then
+                        occupiedGuids[slotData.ItemGUID] = true
+                        safeItemGuids[slotData.ItemGUID] = true
+                    end
+
+                    local slotKey = tostring(slotIndex)
+                    local safeSlotData = slots[slotKey] or slots[slotIndex]
+                    if type(safeSlotData) == "table" then
+                        local guid = safeSlotData.ItemGUID
+                        local previousAttempt = openSafeAttempts[slotIndex]
+                        if previousAttempt and previousAttempt.guid ~= guid then
+                            previousAttempt = nil
+                            openSafeAttempts[slotIndex] = nil
+                        end
+
+                        local startTime = tonumber(safeSlotData.StartTime)
+                        local duration = tonumber(safeSlotData.Duration)
+                        if guid and startTime and duration and startTime + duration <= workspace:GetServerTimeNow() then
+                            local canAttempt = not previousAttempt
+                                or (not previousAttempt.completed and os.clock() - previousAttempt.attemptAt >= 5)
+                            if canAttempt then
+                                openSafeAttempts[slotIndex] = {
+                                    guid = guid,
+                                    attemptAt = os.clock(),
+                                    completed = false,
+                                }
+                                local openOk, result = pcall(function()
+                                    return OpenSafeRemote:InvokeServer(slotIndex)
+                                end)
+                                if openOk and result ~= false and not (type(result) == "table" and result.success == false) then
+                                    openSafeAttempts[slotIndex].completed = true
+                                    print(string.format("[AutoUnlockSafe] Opened safe in slot %d", slotIndex))
+                                else
+                                    warn(string.format("[AutoUnlockSafe] OpenSafe failed for slot %d: %s", slotIndex, tostring(result)))
+                                end
+                                task.wait(0.25)
+                            end
+                        end
+                    else
+                        openSafeAttempts[slotIndex] = nil
+                    end
+                end
+
+                for slotIndex = 1, unlockedCount do
+                    if not AutoUnlockSafeT.Value or autoUnlockSafeRunId ~= runId then break end
+                    local slotKey = tostring(slotIndex)
+                    local slotData = slots[slotKey] or slots[slotIndex]
+                    if not slotData then
+                        local itemInfoToStart
+                        for _, itemInfo in ipairs(lockableItems) do
+                            if type(itemInfo) == "table" and type(itemInfo.guid) == "string" then
+                                local guid = itemInfo.guid
+                                safeItemGuids[guid] = true
+                                local lastAttempt = locksmithAttempts[guid]
+                                local canRetry = lastAttempt == nil or (lastAttempt ~= math.huge and os.clock() - lastAttempt >= 5)
+                                if not occupiedGuids[guid] and canRetry then
+                                    itemInfoToStart = itemInfo
+                                    break
+                                end
+                            end
+                        end
+
+                        if itemInfoToStart then
+                            local guid = itemInfoToStart.guid
+                            locksmithAttempts[guid] = os.clock()
+                            local startOk, result = pcall(function()
+                                return StartLocksmithRemote:InvokeServer(
+                                    slotIndex,
+                                    guid,
+                                    itemInfoToStart.source,
+                                    itemInfoToStart.vehicleGUID
+                                )
+                            end)
+                            if not startOk or (type(result) == "table" and result.success == false) then
+                                warn(string.format("[AutoUnlockSafe] StartLocksmith failed for %s: %s", guid, tostring(result)))
+                            else
+                                locksmithAttempts[guid] = math.huge
+                                occupiedGuids[guid] = true
+                                print(string.format("[AutoUnlockSafe] Started unlocking safe item %s in slot %d", guid, slotIndex))
+                            end
+                            task.wait(0.25)
+                        end
+                    end
+                end
+            end
+            task.wait(2)
+        end
+    end)
+end)
+
 local GradingRightGroupbox = Tabs.Main:AddRightGroupbox("Grading")
 
 local GradingPriorityDd = GradingRightGroupbox:AddDropdown("GradingPriorityDd", {
@@ -1309,7 +1468,7 @@ AutoGradingT:OnChanged(function(Value)
 
                     for _, itemInfo in ipairs(rawItems) do
                         local data = itemInfo.data
-                        if data and (not data.Grade) and (not data.Condition or data.Condition >= 50) then
+                        if data and not isSafeItemGuid(itemInfo.guid) and (not data.Grade) and (not data.Condition or data.Condition >= 50) then
                             
                             local isTrophyItem = IgnoreGradingTrophyT.Value and isTrophyItemData(data)
 
